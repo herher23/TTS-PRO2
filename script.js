@@ -561,7 +561,7 @@ async function synthesizeChunk(textChunk, voice) {
             }
         };
 
-        const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`;
+        const apiUrl = `https://vpn2-pro.herher650.workers.dev/?https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`;
 
         try {
             const response = await fetch(apiUrl, {
