@@ -1,592 +1,846 @@
-const { useState, useEffect } = React;
+// =============================================================
+// NEO-YANGON 2026 TTS ENGINE — script.js
+// Multi API Key rotation + Multi TTS Model rotation + Glossary
+// =============================================================
 
+// ---- DOM Element Cache ----
+const textInput = document.getElementById('textInput');
+const charCount = document.getElementById('charCount');
+const clearBtn = document.getElementById('clearBtn');
+const generateBtn = document.getElementById('generateBtn');
+const promptBtns = document.querySelectorAll('.prompt-btn');
+const voiceSelect = document.getElementById('voiceSelect');
+const voiceInfo = document.getElementById('voiceInfo');
+const speedSlider = document.getElementById('speedSlider');
+const speedVal = document.getElementById('speedVal');
+const clarityBoostBtn = document.getElementById('clarityBoostBtn');
+const clarityStatus = document.getElementById('clarityStatus');
+const spatial3dBtn = document.getElementById('spatial3dBtn');
+const spatialStatus = document.getElementById('spatialStatus');
+
+const visualizer = document.getElementById('visualizer');
+const visSpectrumBtn = document.getElementById('visSpectrumBtn');
+const visWaveBtn = document.getElementById('visWaveBtn');
+const loadingOverlay = document.getElementById('loadingOverlay');
+const loadingMainText = document.getElementById('loadingMainText');
+const loadingSubText = document.getElementById('loadingSubText');
+const chunkProgressBarContainer = document.getElementById('chunkProgressBarContainer');
+const chunkProgressBar = document.getElementById('chunkProgressBar');
+
+const audioPlayer = document.getElementById('audioPlayer');
+const customControls = document.getElementById('customControls');
+const playPauseBtn = document.getElementById('playPauseBtn');
+const progressTrack = document.getElementById('progressTrack');
+const progressBar = document.getElementById('progressBar');
+const timeCurrent = document.getElementById('timeCurrent');
+const timeTotal = document.getElementById('timeTotal');
+const downloadBtn = document.getElementById('downloadBtn');
+const statusText = document.getElementById('statusText');
+
+// Key / Model manager DOM
+const apiKeysInput = document.getElementById('apiKeysInput');
+const modelsInput = document.getElementById('modelsInput');
+const saveKeysModelsBtn = document.getElementById('saveKeysModelsBtn');
+const saveStatusMsg = document.getElementById('saveStatusMsg');
+const keyCountBadge = document.getElementById('keyCountBadge');
+const modelBadge = document.getElementById('modelBadge');
+const toggleKeyPanelBtn = document.getElementById('toggleKeyPanelBtn');
+const keyPanelBody = document.getElementById('keyPanelBody');
+
+// Theme
+const themeToggleBtn = document.getElementById('themeToggleBtn');
+const themeLabel = document.getElementById('themeLabel');
+
+// Glossary
+const glossaryEnabledChk = document.getElementById('glossaryEnabledChk');
+const glossaryTermInput = document.getElementById('glossaryTermInput');
+const glossaryReplInput = document.getElementById('glossaryReplInput');
+const glossaryAddBtn = document.getElementById('glossaryAddBtn');
+const glossaryList = document.getElementById('glossaryList');
+
+// ---- State & Web Audio API Variables ----
+let audioCtx;
+let analyser;
+let audioSource;
+let clarityFilterNode;
+let animationFrameId;
+
+let currentAudioBlob = null;
+let isGenerating = false;
+let visualizerMode = 'spectrum';
+let clarityBoostActive = true;
+let cyberReverbActive = false;
+
+// ---- Default TTS Voice Presets ----
 const VOICES = [
-    // Female Voices (မိန်းကလေး)
-    { id: 'PhwayPhway', apiId: 'Kore', name: 'Phway Phway', label: 'မဖွေးဖွေး (Female)', avatar: 'https://api.dicebear.com/7.x/avataaars/svg?seed=PhwayPhway' },
-    { id: 'WuttHmone', apiId: 'Aoede', name: 'Wutt Hmone Shwe Yi', label: 'မဝတ်မှုံရွှေရည် (Female)', avatar: 'https://api.dicebear.com/7.x/avataaars/svg?seed=WuttHmone' },
-    { id: 'ThetMon', apiId: 'Leda', name: 'Thet Mon Myint', label: 'မသက်မွန်မြင့် (Female)', avatar: 'https://api.dicebear.com/7.x/avataaars/svg?seed=ThetMon' },
-    { id: 'Eaindra', apiId: 'Callirrhoe', name: 'Eaindra Kyaw Zin', label: 'မအိန္ဒြာကျော်ဇင် (Female)', avatar: 'https://api.dicebear.com/7.x/avataaars/svg?seed=Eaindra' },
-    { id: 'ShweHmone', apiId: 'Kore', name: 'Shwe Hmone Yati', label: 'မရွှေမှုံရတီ (Female)', avatar: 'https://api.dicebear.com/7.x/avataaars/svg?seed=ShweHmone' }, 
-    { id: 'Thinzar', apiId: 'Aoede', name: 'Thinzar Wint Kyaw', label: 'မသင်ဇာဝင့်ကျော် (Female)', avatar: 'https://api.dicebear.com/7.x/avataaars/svg?seed=Thinzar' },
-    
-    // Male Voices (ယောကျ်ားလေး)
-    { id: 'SaiSai', apiId: 'Puck', name: 'Sai Sai', label: 'ကိုစိုင်းစိုင်း (Male)', avatar: 'https://api.dicebear.com/7.x/avataaars/svg?seed=SaiSai' },
-    { id: 'NayToe', apiId: 'Charon', name: 'Nay Toe', label: 'ကိုနေတိုး (Male)', avatar: 'https://api.dicebear.com/7.x/avataaars/svg?seed=NayToe' },
-    { id: 'MyintMyat', apiId: 'Fenrir', name: 'Myint Myat', label: 'ကိုမြင့်မြတ် (Male)', avatar: 'https://api.dicebear.com/7.x/avataaars/svg?seed=MyintMyat' },
-    { id: 'Daung', apiId: 'Orus', name: 'Daung', label: 'ကိုဒေါင်း (Male)', avatar: 'https://api.dicebear.com/7.x/avataaars/svg?seed=Daung' },
-    { id: 'AungYeLin', apiId: 'Puck', name: 'Aung Ye Lin', label: 'ကိုအောင်ရဲလင်း (Male)', avatar: 'https://api.dicebear.com/7.x/avataaars/svg?seed=AungYeLin' },
-    { id: 'PyayTiOo', apiId: 'Charon', name: 'Pyay Ti Oo', label: 'ကိုပြေတီဦး (Male)', avatar: 'https://api.dicebear.com/7.x/avataaars/svg?seed=PyayTiOo' },
-    { id: 'LuMin', apiId: 'Fenrir', name: 'Lu Min', label: 'ကိုလူမင်း (Male)', avatar: 'https://api.dicebear.com/7.x/avataaars/svg?seed=LuMin' },
-    { id: 'PaingTakhon', apiId: 'Orus', name: 'Paing Takhon', label: 'ကိုပိုင်တံခွန် (Male)', avatar: 'https://api.dicebear.com/7.x/avataaars/svg?seed=PaingTakhon' }
+    { id: "Puck", name: "Puck (Upbeat & Energetic)", detail: "တက်ကြွပြီး ကြည်လင်သော အသံ (Energetic, high clarity)" },
+    { id: "Charon", name: "Charon (Informative News)", detail: "သတင်းထုတ်ပြန်ချက်နှင့် တည်ငြိမ်သောအသံ (Clear news tone)" },
+    { id: "Kore", name: "Kore (Firm & Direct)", detail: "ပြတ်သားပြီး အာဏာရှိသောအသံ (Direct & authoritative)" },
+    { id: "Fenrir", name: "Fenrir (Dynamic Sci-Fi)", detail: "ဆိုက်ဘာပန့်ခ် စတိုင်လ် အားကောင်းသောအသံ (High dynamic range)" },
+    { id: "Zephyr", name: "Zephyr (Smooth & Bright)", detail: "ချောမွေ့ပြီး သာယာသော အသံ (Smooth, bright tone)" },
+    { id: "Leda", name: "Leda (Youthful & Casual)", detail: "ငယ်ရွယ်ပြီး လွတ်လပ်သော အသံ (Youthful, casual style)" },
+    { id: "Aoede", name: "Aoede (Breezy & Warm)", detail: "နွေးထွေးပြီး ငြိမ့်ညောင်းသောအသံ (Relaxed & smooth)" },
+    { id: "Algieba", name: "Algieba (Deep Resonant)", detail: "နက်ရှိုင်းပြီး တည်ငြိမ်သော အသံ (Deep, resonant tone)" }
 ];
 
-const EMOTIONS = [
-    'Normal😊',
-    'Happy/Excited😁',
-    'Sad / Emotional😭',
-    'Dynamic/Action🔥',
-    'Funny / Comedy🤣',
-    'Horror/Scary👻',
-    'Whisper🤭'
+// Default model list — only the two below are confirmed Gemini TTS model IDs.
+// Add any additional model IDs your key(s) actually have access to (one per line)
+// in the "TTS Model List" box in the UI; rotation works across however many you list.
+const DEFAULT_MODELS = [
+    "gemini-2.5-flash-preview-tts",
+    "gemini-2.5-pro-preview-tts"
 ];
 
-function App() {
-    const [theme, setTheme] = useState('dark');
-    const [mode, setMode] = useState('solo');
-    const [toast, setToast] = useState(null);
-    const [showSettings, setShowSettings] = useState(false);
-    const [apiKey, setApiKey] = useState(() => localStorage.getItem('mfm_api_key') || '');
-    
-    // Custom Proxy Features
-    const [useProxy, setUseProxy] = useState(() => {
-        const saved = localStorage.getItem('mfm_use_proxy');
-        return saved !== null ? saved === 'true' : true; 
-    });
-    
-    // Hardcoded User's Proxy URL
-    const [customProxyUrl, setCustomProxyUrl] = useState(() => {
-        const saved = localStorage.getItem('mfm_custom_proxy_url');
-        if (!saved || saved === 'https://corsproxy.io/?' || saved === 'https://ttspro03.mocfy866.workers.dev/') {
-            return 'https://ttspro03.mocfy866.workers.dev/?';
-        }
-        return saved;
-    });
+// =============================================================
+// LocalStorage-backed Key / Model / Glossary / Theme managers
+// =============================================================
+const LS_KEYS = 'neoyangon_gemini_keys';
+const LS_KEY_IDX = 'neoyangon_key_idx';
+const LS_MODELS = 'neoyangon_tts_models';
+const LS_MODEL_IDX = 'neoyangon_model_idx';
+const LS_GLOSSARY = 'neoyangon_glossary';
+const LS_GLOSSARY_ENABLED = 'neoyangon_glossary_enabled';
+const LS_THEME = 'neoyangon_theme';
 
-    const [isCheckingVersion, setIsCheckingVersion] = useState(true);
-    const [versionStatus, setVersionStatus] = useState('Checking Update...');
-    
-    const [blocks, setBlocks] = useState([{ 
-        id: Date.now(), 
-        text: '', 
-        voice: VOICES[0], 
-        audio: null, 
-        loading: false, 
-        previewLoading: false,
-        pitch: 0,
-        emotion: 'Normal😊'
-    }]);
-
-    const [fullAudio, setFullAudio] = useState(null);
-    const [fullLoading, setFullLoading] = useState(false);
-
-    useEffect(() => {
-        const savedTheme = localStorage.getItem('mfm_theme') || 'dark';
-        setTheme(savedTheme);
-        if (savedTheme === 'dark') {
-            document.documentElement.classList.add('dark');
-        } else {
-            document.documentElement.classList.remove('dark');
-        }
-    }, []);
-
-    const toggleTheme = () => {
-        const newTheme = theme === 'dark' ? 'light' : 'dark';
-        setTheme(newTheme);
-        localStorage.setItem('mfm_theme', newTheme);
-        if (newTheme === 'dark') {
-            document.documentElement.classList.add('dark');
-        } else {
-            document.documentElement.classList.remove('dark');
-        }
-    };
-
-    useEffect(() => {
-        const timer = setTimeout(() => {
-            setIsCheckingVersion(false);
-            setVersionStatus(apiKey ? 'Pro Version Active' : 'API Key Required');
-        }, 1200);
-        return () => clearTimeout(timer);
-    }, [apiKey]);
-
-    const showMsg = (msg, type = 'error') => {
-        setToast({ msg, type });
-        setTimeout(() => setToast(null), 4500);
-    };
-
-    const saveApiKey = (key) => {
-        setApiKey(key);
-        localStorage.setItem('mfm_api_key', key);
-    };
-
-    const toggleProxy = (checked) => {
-        setUseProxy(checked);
-        localStorage.setItem('mfm_use_proxy', checked);
-    };
-
-    const updateCustomProxy = (url) => {
-        setCustomProxyUrl(url);
-        localStorage.setItem('mfm_custom_proxy_url', url);
-    };
-
-    const convertToWav = (pcmData) => {
-        const buffer = new ArrayBuffer(44 + pcmData.length * 2);
-        const view = new DataView(buffer);
-        const writeString = (o, s) => { for (let i = 0; i < s.length; i++) view.setUint8(o + i, s.charCodeAt(i)); };
-        
-        writeString(0, 'RIFF');
-        view.setUint32(4, 32 + pcmData.length * 2, true);
-        writeString(8, 'WAVE');
-        writeString(12, 'fmt ');
-        view.setUint32(16, 16, true);
-        view.setUint16(20, 1, true);
-        view.setUint16(22, 1, true);
-        view.setUint32(24, 24000, true);
-        view.setUint32(28, 48000, true);
-        view.setUint16(32, 2, true);
-        view.setUint16(34, 16, true);
-        writeString(36, 'data');
-        view.setUint32(40, pcmData.length * 2, true);
-        
-        for (let i = 0; i < pcmData.length; i++) view.setInt16(44 + i * 2, pcmData[i], true);
-        return new Blob([buffer], { type: 'audio/wav' });
-    };
-
-    const applyVoiceSettings = (text, emotion, pitch) => {
-        let prefix = "";
-        if (emotion && emotion !== 'Normal😊') {
-            const tone = emotion.replace(/[^a-zA-Z\/ ]/g, "").trim();
-            prefix += `[Speak in a ${tone} tone] `;
-        }
-        if (pitch !== 0) {
-            const pitchDesc = pitch > 0 ? `high pitch level` : `low pitch level`;
-            prefix += `[Use a ${pitchDesc}] `;
-        }
-        return prefix ? `${prefix}\n${text}` : text;
-    };
-
-    const fetchTTS = async (text, apiId) => {
-        if (!apiKey) throw new Error("API_KEY_MISSING");
-
-        const keysArray = apiKey.split(',').map(k => k.trim()).filter(k => k.length > 0);
-        if (keysArray.length === 0) throw new Error("API_KEY_MISSING");
-        
-        const currentKey = keysArray[Math.floor(Math.random() * keysArray.length)];
-        const targetUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-tts-preview:generateContent?key=${currentKey}`;
-        
-        const fetchUrl = useProxy ? `${customProxyUrl}${targetUrl}` : targetUrl;
-
-        try {
-            const res = await fetch(fetchUrl, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    contents: [{ parts: [{ text }] }],
-                    generationConfig: { 
-                        responseModalities: ["AUDIO"], 
-                        speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: apiId } } }
-                    }
-                })
-            });
-
-            if (!res.ok) {
-                let errorMsg = `HTTP Error ${res.status}`;
-                try {
-                    const errorData = await res.json();
-                    errorMsg = errorData.error?.message || errorMsg;
-                } catch(e) {}
-                throw new Error(errorMsg);
-            }
-
-            const data = await res.json();
-            
-            const b64 = data.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
-            if (!b64) throw new Error("API Returned Invalid Data Format");
-            
-            const bin = atob(b64);
-            const pcm = new Int16Array(bin.length / 2);
-            for (let i = 0; i < bin.length; i += 2) pcm[i / 2] = (bin.charCodeAt(i + 1) << 8) | bin.charCodeAt(i);
-            return pcm;
-
-        } catch (error) {
-            if (error.name === 'TypeError' && error.message.includes('Failed to fetch')) {
-                if (useProxy) {
-                    throw new Error("Proxy connection failed! Please check your Custom Proxy URL or turn Proxy OFF and use a VPN.");
-                } else {
-                    throw new Error("Network Error. Please turn ON VPN or enable Proxy in Settings.");
-                }
-            }
-            throw error;
-        }
-    };
-
-    const handleSingleGenerate = async (id, isPreview = false) => {
-        if (!apiKey) {
-            showMsg("Please configure your API Key in settings", "error");
-            setShowSettings(true);
-            return;
-        }
-        const block = blocks.find(b => b.id === id);
-        let textToUse = isPreview ? `မင်္ဂလာပါ။ ${block.voice.name} မှ အသံစမ်းသပ်ပေးနေခြင်းဖြစ်ပါတယ်။` : block.text;
-        
-        if (!isPreview && !textToUse.trim()) {
-            showMsg("Please enter text for this dialogue", "error");
-            return;
-        }
-
-        setBlocks(prev => prev.map(b => b.id === id ? { ...b, previewLoading: isPreview, loading: !isPreview } : b));
-        
-        try {
-            const finalPromptText = applyVoiceSettings(textToUse, block.emotion, block.pitch);
-            const pcm = await fetchTTS(finalPromptText, block.voice.apiId);
-            const wav = convertToWav(pcm);
-            const url = URL.createObjectURL(wav);
-            
-            if (isPreview) {
-                new Audio(url).play();
-                setBlocks(prev => prev.map(b => b.id === id ? { ...b, previewLoading: false } : b));
-            } else {
-                setBlocks(prev => prev.map(b => b.id === id ? { ...b, audio: url, loading: false } : b));
-                showMsg("Audio generated successfully!", "success");
-            }
-        } catch (e) {
-            setBlocks(prev => prev.map(b => b.id === id ? { ...b, loading: false, previewLoading: false } : b));
-            if (e.message === "API_KEY_MISSING") {
-                showMsg("API Key is missing or invalid", "error");
-            } else {
-                showMsg(`Error: ${e.message}`, "error"); 
-            }
-        }
-    };
-
-    const handleCinematicGenerate = async () => {
-        if (!apiKey) {
-            showMsg("Please configure your API Key first", "error");
-            setShowSettings(true);
-            return;
-        }
-        
-        const validBlocks = blocks.filter(b => b.text.trim());
-        if (validBlocks.length === 0) {
-            showMsg("Cannot generate: No valid text blocks found.", "error");
-            return;
-        }
-        if (validBlocks.length < blocks.length) {
-            showMsg(`Generating... Skipped ${blocks.length - validBlocks.length} empty block(s).`, "warning");
-        } else {
-            showMsg("Starting full cinematic synthesis...", "success");
-        }
-
-        setFullLoading(true);
-        setFullAudio(null);
-        
-        try {
-            const chunks = new Array(validBlocks.length).fill(null);
-            const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
-            
-            const BATCH_SIZE = 3; 
-            const DELAY_BETWEEN_BATCHES = 6000; 
-
-            for (let i = 0; i < validBlocks.length; i += BATCH_SIZE) {
-                const batch = validBlocks.slice(i, i + BATCH_SIZE);
-                showMsg(`Processing part ${Math.ceil((i+1)/BATCH_SIZE)} of ${Math.ceil(validBlocks.length/BATCH_SIZE)}...`, "warning");
-
-                const batchPromises = batch.map(async (block, index) => {
-                    const finalPromptText = applyVoiceSettings(block.text, block.emotion, block.pitch);
-                    try {
-                        const pcm = await fetchTTS(finalPromptText, block.voice.apiId);
-                        return { pcm, originalIndex: i + index };
-                    } catch (err) {
-                        console.error(`Error generating audio for block ${i + index}:`, err);
-                        throw err; 
-                    }
-                });
-
-                const batchResults = await Promise.all(batchPromises);
-                
-                for (const result of batchResults) {
-                    if (result.pcm) {
-                        chunks[result.originalIndex] = result.pcm;
-                    }
-                }
-
-                if (i + BATCH_SIZE < validBlocks.length) {
-                    await delay(DELAY_BETWEEN_BATCHES);
-                }
-            }
-
-            const finalChunks = [];
-            for (const pcm of chunks) {
-                if (pcm) {
-                    finalChunks.push(pcm);
-                    finalChunks.push(new Int16Array(24000 * 0.5).fill(0)); 
-                }
-            }
-
-            const totalSamples = finalChunks.reduce((a, c) => a + c.length, 0);
-            const fullPcm = new Int16Array(totalSamples);
-            let offset = 0;
-            for (const chunk of finalChunks) {
-                fullPcm.set(chunk, offset);
-                offset += chunk.length;
-            }
-
-            const wav = convertToWav(fullPcm);
-            setFullAudio(URL.createObjectURL(wav));
-            showMsg("Cinematic audio generated successfully!", "success");
-        } catch (e) {
-            console.error(e);
-            showMsg(`Error: ${e.message}`, "error");
-        } finally {
-            setFullLoading(false);
-        }
-    };
-
-    const downloadAudio = (url, filename) => {
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = filename;
-        a.click();
-    };
-
-    return (
-        <div className="max-w-xl mx-auto min-h-screen px-4 pb-48 pt-10">
-            
-            {toast && (
-                <div className={`toast px-6 py-3 rounded-2xl flex items-center gap-3 font-bold text-xs shadow-2xl ${
-                    toast.type === 'error' ? 'bg-red-500 text-white' : 
-                    toast.type === 'warning' ? 'bg-amber-500 text-white' : 
-                    'bg-gradient-to-r from-indigo-500 to-purple-500 text-white'
-                }`}>
-                    <i className={`fa-solid ${toast.type === 'error' ? 'fa-triangle-exclamation' : toast.type === 'warning' ? 'fa-circle-exclamation' : 'fa-circle-check'}`}></i>
-                    {toast.msg}
-                </div>
-            )}
-
-            {showSettings && (
-                <div className="modal-overlay">
-                    <div className="bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-700 p-6 rounded-3xl w-[90%] max-w-sm relative shadow-2xl">
-                        <button onClick={() => setShowSettings(false)} className="absolute top-4 right-4 text-slate-400 dark:text-zinc-500 hover:text-slate-800 dark:hover:text-white transition-colors">
-                            <i className="fa-solid fa-times text-xl"></i>
-                        </button>
-                        <h2 className="text-lg font-black uppercase mb-4 flex items-center gap-2 text-slate-800 dark:text-white">
-                            <i className="fa-solid fa-shield-halved text-indigo-500"></i> Settings & Pro
-                        </h2>
-                        
-                        <div className="space-y-4">
-                            <div className="p-3 bg-slate-50 dark:bg-black/30 rounded-xl border border-slate-200 dark:border-white/5 flex items-center gap-3 mb-2">
-                                <i className={`fa-solid ${apiKey ? 'fa-circle-check text-indigo-500' : 'fa-circle-xmark text-red-500'} text-xl`}></i>
-                                <div>
-                                    <p className="text-xs font-bold text-slate-800 dark:text-white">{apiKey ? 'License Active' : 'License Required'}</p>
-                                    <p className="text-[10px] text-slate-500 dark:text-zinc-500">Enter Gemini API key(s) to unlock</p>
-                                </div>
-                            </div>
-                            
-                            <div>
-                                <label className="block text-[10px] font-bold text-slate-500 dark:text-zinc-400 uppercase mb-2">Gemini API Keys (Comma Separated)</label>
-                                <textarea 
-                                    value={apiKey} 
-                                    onChange={(e) => saveApiKey(e.target.value)}
-                                    placeholder="AIzaSy123..., AIzaSy456..." 
-                                    rows="3"
-                                    className="w-full bg-slate-100 dark:bg-black/50 border border-slate-200 dark:border-zinc-700 rounded-xl p-3 text-sm outline-none focus:border-indigo-500 text-slate-800 dark:text-white transition-colors resize-none"
-                                />
-                            </div>
-
-                            <div className="p-3 bg-slate-50 dark:bg-black/30 rounded-xl border border-slate-200 dark:border-white/5">
-                                <div className="flex items-center justify-between mb-3">
-                                    <div>
-                                        <p className="text-xs font-bold text-slate-800 dark:text-white">API Proxy Override</p>
-                                        <p className="text-[10px] text-slate-500">Turn OFF if using your own VPN</p>
-                                    </div>
-                                    <label className="relative inline-flex items-center cursor-pointer">
-                                        <input type="checkbox" className="sr-only peer" checked={useProxy} onChange={(e) => toggleProxy(e.target.checked)}/>
-                                        <div className="w-9 h-5 bg-slate-300 peer-focus:outline-none rounded-full peer dark:bg-zinc-700 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all dark:border-gray-600 peer-checked:bg-indigo-500"></div>
-                                    </label>
-                                </div>
-
-                                {useProxy && (
-                                    <div className="pt-2 border-t border-slate-200 dark:border-zinc-700">
-                                        <label className="block text-[10px] font-bold text-slate-500 dark:text-zinc-400 uppercase mb-2">Proxy Server URL</label>
-                                        <input 
-                                            type="text" 
-                                            value={customProxyUrl} 
-                                            onChange={(e) => updateCustomProxy(e.target.value)}
-                                            className="w-full bg-slate-100 dark:bg-black/50 border border-slate-200 dark:border-zinc-700 rounded-lg p-2.5 text-[11px] outline-none focus:border-indigo-500 text-slate-800 dark:text-white transition-colors"
-                                            placeholder="https://ttspro03.mocfy866.workers.dev/?"
-                                        />
-                                        <p className="text-[9px] text-slate-500 mt-2 leading-relaxed">
-                                            Default: <code className="bg-slate-200 dark:bg-zinc-800 px-1 rounded">https://ttspro03.mocfy866.workers.dev/?</code><br/>
-                                            ကိုယ်ပိုင် <b>Cloudflare Worker Proxy</b> အသုံးပြုထားပါသည်။
-                                        </p>
-                                    </div>
-                                )}
-                            </div>
-                            
-                            <button onClick={() => setShowSettings(false)} className="w-full py-3 bg-gradient-to-r from-indigo-500 to-purple-500 hover:opacity-90 text-white font-black uppercase text-xs rounded-xl transition-all shadow-md mt-2">
-                                Save & Close
-                            </button>
-                        </div>
-                    </div>
-                </div>
-            )}
-
-            <header className="text-center mb-10 relative">
-                <button onClick={toggleTheme} className="absolute right-14 top-0 w-10 h-10 bg-white dark:bg-zinc-900 rounded-xl border border-slate-200 dark:border-white/5 flex items-center justify-center text-slate-500 dark:text-zinc-400 hover:text-indigo-500 dark:hover:text-indigo-400 transition-all shadow-sm">
-                    {theme === 'dark' ? <i className="fa-solid fa-sun"></i> : <i className="fa-solid fa-moon"></i>}
-                </button>
-                <button onClick={() => setShowSettings(true)} className="absolute right-0 top-0 w-10 h-10 bg-white dark:bg-zinc-900 rounded-xl border border-slate-200 dark:border-white/5 flex items-center justify-center text-slate-500 dark:text-zinc-400 hover:text-indigo-500 dark:hover:text-indigo-500 transition-all shadow-sm">
-                    <i className="fa-solid fa-gear"></i>
-                </button>
-                
-                <div className="w-16 h-16 bg-white dark:bg-zinc-900 border-2 border-indigo-500 rounded-2xl flex items-center justify-center mx-auto mb-4 ai-glow">
-                    <i className="fa-solid fa-microphone-lines text-2xl text-indigo-500"></i>
-                </div>
-                <h1 className="text-2xl font-black italic uppercase tracking-tighter text-slate-900 dark:text-white">
-                    TTS <span className="bg-clip-text text-transparent bg-gradient-to-r from-indigo-500 via-purple-500 to-pink-500">PRO</span>
-                </h1>
-                <p className="text-[10px] font-bold text-slate-500 dark:text-zinc-500 uppercase tracking-[0.3em] mt-1">Professional Dual Mode</p>
-                
-                <div className="mt-4 inline-flex items-center gap-2 px-3 py-1.5 bg-slate-100 dark:bg-black/50 border border-slate-200 dark:border-white/5 rounded-full text-[9px] font-bold uppercase tracking-wider cursor-pointer hover:bg-slate-200 dark:hover:bg-black/80 transition-colors shadow-sm" onClick={() => setShowSettings(true)}>
-                    {isCheckingVersion ? (
-                        <><i className="fa-solid fa-spinner animate-spin text-indigo-500"></i> <span className="text-slate-600 dark:text-slate-300">Checking System...</span></>
-                    ) : (
-                        <><i className={`fa-solid ${apiKey ? 'fa-circle-check text-indigo-500' : 'fa-triangle-exclamation text-red-500'}`}></i> <span className="text-slate-600 dark:text-slate-300">{versionStatus}</span></>
-                    )}
-                </div>
-            </header>
-
-            <div className="flex bg-slate-100 dark:bg-zinc-900/50 p-1.5 rounded-[1.8rem] mb-10 border border-slate-200 dark:border-white/5 shadow-inner">
-                <button onClick={() => setMode('solo')} className={`flex-1 py-3.5 rounded-[1.5rem] text-[11px] font-black uppercase transition-all ${mode === 'solo' ? 'bg-gradient-to-r from-indigo-500 to-purple-500 text-white shadow-md shadow-indigo-500/30' : 'text-slate-500 dark:text-zinc-500 hover:text-slate-700 dark:hover:text-zinc-300'}`}>Solo Mode</button>
-                <button onClick={() => setMode('drama')} className={`flex-1 py-3.5 rounded-[1.5rem] text-[11px] font-black uppercase transition-all ${mode === 'drama' ? 'bg-gradient-to-r from-indigo-500 to-purple-500 text-white shadow-md shadow-indigo-500/30' : 'text-slate-500 dark:text-zinc-500 hover:text-slate-700 dark:hover:text-zinc-300'}`}>Cinematic Mode</button>
-            </div>
-
-            <div className="space-y-6">
-                {blocks.map((b, idx) => (
-                    <div key={b.id} className="glass-card p-6 relative">
-                        <div className="flex items-center justify-between mb-6">
-                            <div className="flex items-center gap-4">
-                                <img src={b.voice.avatar} className="character-img" />
-                                <div>
-                                    <h3 className="font-black text-sm">{b.voice.name}</h3>
-                                    <p className="text-[10px] text-slate-500 dark:text-zinc-500 font-bold uppercase">{b.voice.label}</p>
-                                </div>
-                            </div>
-                            <button onClick={() => handleSingleGenerate(b.id, true)} className="preview-btn" disabled={b.previewLoading}>
-                                {b.previewLoading ? <i className="fa-solid fa-spinner animate-spin"></i> : <i className="fa-solid fa-ear-listen"></i>}
-                                Test
-                            </button>
-                        </div>
-
-                        <div className="space-y-4">
-                            <select 
-                                className="w-full bg-slate-50 dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 text-xs font-bold p-3.5 rounded-xl text-slate-800 dark:text-white outline-none focus:border-indigo-500 transition-colors shadow-sm"
-                                value={b.voice.id}
-                                onChange={(e) => setBlocks(blocks.map(x => x.id === b.id ? {...x, voice: VOICES.find(v => v.id === e.target.value)} : x))}
-                            >
-                                {VOICES.map(v => <option key={v.id} value={v.id}>{v.label}</option>)}
-                            </select>
-                            
-                            <div className="flex flex-col md:flex-row gap-4 mt-4 p-4 bg-slate-100/50 dark:bg-black/20 rounded-2xl border border-slate-200/50 dark:border-white/5">
-                                <div className="flex-1">
-                                    <label className="block text-[10px] font-bold text-slate-500 dark:text-zinc-400 uppercase mb-2">
-                                        <i className="fa-solid fa-masks-theater mr-1"></i> Emotion
-                                    </label>
-                                    <select 
-                                        className="w-full bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 text-xs font-bold p-3 rounded-xl text-slate-800 dark:text-white outline-none focus:border-indigo-500 transition-all shadow-sm"
-                                        value={b.emotion}
-                                        onChange={(e) => setBlocks(blocks.map(x => x.id === b.id ? {...x, emotion: e.target.value} : x))}
-                                    >
-                                        {EMOTIONS.map(e => <option key={e} value={e}>{e}</option>)}
-                                    </select>
-                                </div>
-                                <div className="flex-1">
-                                    <label className="block text-[10px] font-bold text-slate-500 dark:text-zinc-400 uppercase mb-2 flex justify-between">
-                                        <span><i className="fa-solid fa-wave-square mr-1"></i> Pitch</span>
-                                        <span className="text-indigo-500 font-black">{b.pitch > 0 ? `+${b.pitch}` : b.pitch}</span>
-                                    </label>
-                                    <input 
-                                        type="range" 
-                                        min="-10" max="10" step="1"
-                                        value={b.pitch}
-                                        onChange={(e) => setBlocks(blocks.map(x => x.id === b.id ? {...x, pitch: parseInt(e.target.value)} : x))}
-                                        className="w-full h-2 bg-slate-200 dark:bg-zinc-800 rounded-lg appearance-none cursor-pointer mt-3 accent-indigo-500"
-                                    />
-                                </div>
-                            </div>
-
-                            {/* Character Count အပိုင်း ထည့်သွင်းထားသည် */}
-                            <div className="relative">
-                                <textarea 
-                                    className="w-full bg-white/60 dark:bg-black/40 border border-slate-200 dark:border-zinc-800 rounded-xl p-4 pb-8 text-sm text-slate-800 dark:text-white outline-none focus:border-indigo-500 dark:focus:border-indigo-500 min-h-[120px] transition-all shadow-sm"
-                                    placeholder="ဒီနေရာမှာ စာသားရိုက်ထည့်ပါ..."
-                                    value={b.text}
-                                    onChange={(e) => setBlocks(blocks.map(x => x.id === b.id ? {...x, text: e.target.value} : x))}
-                                />
-                                <div className="absolute bottom-3 right-4 text-[10px] font-bold text-slate-400 dark:text-zinc-500 bg-white/80 dark:bg-black/80 px-2 py-1 rounded-md pointer-events-none">
-                                    {b.text.length} စာလုံး
-                                </div>
-                            </div>
-                        </div>
-
-                        {mode === 'solo' && (
-                            <div className="mt-5 pt-5 border-t border-slate-200 dark:border-white/5 space-y-4">
-                                {b.audio && (
-                                    <div className="flex items-center gap-3">
-                                        <audio src={b.audio} controls className="flex-1" />
-                                        <button 
-                                            onClick={() => downloadAudio(b.audio, `Solo_${b.voice.name}_${Date.now()}.wav`)}
-                                            className="download-btn-small"
-                                            title="Download Audio"
-                                        >
-                                            <i className="fa-solid fa-download"></i>
-                                        </button>
-                                    </div>
-                                )}
-                                <button 
-                                    onClick={() => handleSingleGenerate(b.id)}
-                                    disabled={b.loading || !b.text.trim()}
-                                    className="w-full py-4 bg-slate-900 dark:bg-white text-white dark:text-black font-black uppercase text-[11px] rounded-xl active:scale-95 transition-all disabled:opacity-30 shadow-md"
-                                >
-                                    {b.loading ? <i className="fa-solid fa-circle-notch animate-spin mr-2"></i> : <i className="fa-solid fa-play mr-2"></i>}
-                                    {b.loading ? "Generating Voice..." : "Generate Audio"}
-                                </button>
-                            </div>
-                        )}
-
-                        {mode === 'drama' && blocks.length > 1 && (
-                            <button onClick={() => setBlocks(blocks.filter(x => x.id !== b.id))} className="absolute -top-3 -right-3 w-8 h-8 bg-red-500 rounded-full text-white flex items-center justify-center border-4 border-white dark:border-black text-xs shadow-md">
-                                <i className="fa-solid fa-times"></i>
-                            </button>
-                        )}
-                    </div>
-                ))}
-
-                <button 
-                    onClick={() => setBlocks([...blocks, { id: Date.now(), text: '', voice: VOICES[0], audio: null, loading: false, previewLoading: false, pitch: 0, emotion: 'Normal😊' }])}
-                    className="w-full py-6 border-2 border-dashed border-slate-300 dark:border-zinc-800 rounded-[2rem] text-slate-500 dark:text-zinc-600 text-[11px] font-black uppercase tracking-[0.2em] hover:text-slate-700 dark:hover:text-zinc-400 hover:border-slate-400 dark:hover:border-zinc-600 transition-all bg-slate-50/50 dark:bg-transparent"
-                >
-                    + Add New Dialogue
-                </button>
-            </div>
-
-            {mode === 'drama' && (
-                <div className="sticky-footer">
-                    <div className="max-w-xl mx-auto space-y-4">
-                        {fullAudio && (
-                            <div className="bg-indigo-500/10 border border-indigo-500/20 p-5 rounded-3xl mb-4 backdrop-blur-md">
-                                <div className="flex items-center justify-between mb-3">
-                                    <span className="text-[10px] font-black text-indigo-600 dark:text-indigo-400 uppercase tracking-widest">Full Narrative Ready</span>
-                                    <button onClick={() => downloadAudio(fullAudio, `Story_${Date.now()}.wav`)} className="text-slate-700 dark:text-white text-xs hover:text-indigo-500 transition-colors">
-                                        <i className="fa-solid fa-download text-lg"></i>
-                                    </button>
-                                </div>
-                                <audio src={fullAudio} controls />
-                            </div>
-                        )}
-                        <button 
-                            onClick={handleCinematicGenerate}
-                            disabled={fullLoading}
-                            className="w-full py-6 bg-gradient-to-r from-indigo-500 via-purple-500 to-pink-500 text-white font-black uppercase text-xs rounded-[2rem] shadow-[0_10px_40px_rgba(99,102,241,0.3)] active:scale-95 transition-all disabled:opacity-50"
-                        >
-                            {fullLoading ? <i className="fa-solid fa-circle-notch animate-spin mr-3"></i> : <i className="fa-solid fa-clapperboard mr-3"></i>}
-                            {fullLoading ? "Synthesizing Story..." : "Generate Full Cinematic Audio"}
-                        </button>
-                    </div>
-                </div>
-            )}
-        </div>
-    );
+function parseListInput(raw) {
+    return raw.split(/[\n,]/).map(s => s.trim()).filter(Boolean);
 }
 
-const root = ReactDOM.createRoot(document.getElementById('root'));
-root.render(<App />);
+function getKeys() {
+    return parseListInput(localStorage.getItem(LS_KEYS) || '');
+}
+function getModels() {
+    const stored = localStorage.getItem(LS_MODELS);
+    if (stored === null) return DEFAULT_MODELS.slice();
+    const list = parseListInput(stored);
+    return list.length ? list : DEFAULT_MODELS.slice();
+}
+function getIndex(key, len) {
+    let idx = parseInt(localStorage.getItem(key) || '0', 10);
+    if (isNaN(idx) || len === 0) idx = 0;
+    return idx % Math.max(len, 1);
+}
+function setIndex(key, idx, len) {
+    localStorage.setItem(key, String(len > 0 ? (idx % len) : 0));
+}
+
+function updateBadges() {
+    const keys = getKeys();
+    const models = getModels();
+    keyCountBadge.textContent = keys.length;
+    const mIdx = getIndex(LS_MODEL_IDX, models.length);
+    modelBadge.textContent = models[mIdx] ? models[mIdx].replace('gemini-', '').replace('-preview-tts', '') : '-';
+}
+
+function loadKeysModelsIntoInputs() {
+    apiKeysInput.value = (localStorage.getItem(LS_KEYS) || '').split(',').join('\n').trim();
+    const storedModels = localStorage.getItem(LS_MODELS);
+    modelsInput.value = storedModels ? parseListInput(storedModels).join('\n') : DEFAULT_MODELS.join('\n');
+    updateBadges();
+}
+
+saveKeysModelsBtn.addEventListener('click', () => {
+    localStorage.setItem(LS_KEYS, apiKeysInput.value.trim());
+    localStorage.setItem(LS_MODELS, modelsInput.value.trim());
+    setIndex(LS_KEY_IDX, 0, getKeys().length);
+    setIndex(LS_MODEL_IDX, 0, getModels().length);
+    updateBadges();
+    saveStatusMsg.textContent = 'သိမ်းပြီးပါပြီ ✓';
+    setTimeout(() => { saveStatusMsg.textContent = ''; }, 2500);
+});
+
+toggleKeyPanelBtn.addEventListener('click', () => {
+    keyPanelBody.classList.toggle('hidden');
+    const icon = toggleKeyPanelBtn.querySelector('i');
+    icon.classList.toggle('fa-chevron-down');
+    icon.classList.toggle('fa-chevron-up');
+});
+
+// Round-robin credential picker: returns {key, model, keyIdx, modelIdx}
+function nextCredential() {
+    const keys = getKeys();
+    const models = getModels();
+    if (keys.length === 0) throw new Error('API key မထည့်ရသေးပါ — Key & Model Rotation panel တွင် Gemini API key အနည်းဆုံးတစ်ခု ထည့်ပါ။');
+    if (models.length === 0) throw new Error('TTS model list ဗလာဖြစ်နေပါသည်။');
+
+    const keyIdx = getIndex(LS_KEY_IDX, keys.length);
+    const modelIdx = getIndex(LS_MODEL_IDX, models.length);
+
+    // advance pointers for the NEXT call (round-robin across every request)
+    setIndex(LS_KEY_IDX, keyIdx + 1, keys.length);
+    if (keyIdx + 1 >= keys.length) {
+        setIndex(LS_MODEL_IDX, modelIdx + 1, models.length);
+    }
+    updateBadges();
+
+    return { key: keys[keyIdx], model: models[modelIdx], keyIdx, modelIdx, keys, models };
+}
+
+// Force-advance to a different credential (used after a failed attempt)
+function advanceCredential() {
+    const keys = getKeys();
+    const models = getModels();
+    const keyIdx = getIndex(LS_KEY_IDX, keys.length);
+    setIndex(LS_KEY_IDX, keyIdx + 1, keys.length);
+    if (keyIdx + 1 >= keys.length) {
+        const modelIdx = getIndex(LS_MODEL_IDX, models.length);
+        setIndex(LS_MODEL_IDX, modelIdx + 1, models.length);
+    }
+    updateBadges();
+    return { key: keys[getIndex(LS_KEY_IDX, keys.length)], model: models[getIndex(LS_MODEL_IDX, models.length)] };
+}
+
+// =============================================================
+// Glossary / Global Memory
+// =============================================================
+function getGlossary() {
+    try {
+        return JSON.parse(localStorage.getItem(LS_GLOSSARY) || '[]');
+    } catch (e) { return []; }
+}
+function saveGlossary(list) {
+    localStorage.setItem(LS_GLOSSARY, JSON.stringify(list));
+}
+function isGlossaryEnabled() {
+    return localStorage.getItem(LS_GLOSSARY_ENABLED) !== 'false';
+}
+
+function renderGlossary() {
+    const list = getGlossary();
+    glossaryList.innerHTML = '';
+    if (list.length === 0) {
+        glossaryList.innerHTML = '<p class="text-cyan-600/50 font-mono text-[10px]">စာရင်း ဗလာဖြစ်နေပါသည်။</p>';
+        return;
+    }
+    list.forEach((entry, i) => {
+        const row = document.createElement('div');
+        row.className = 'glossary-row';
+        row.innerHTML = `
+            <span class="text-yellow-200 truncate">${escapeHtml(entry.term)}</span>
+            <i class="fa-solid fa-arrow-right text-cyan-500 text-[10px]"></i>
+            <span class="text-cyan-200 truncate flex-1">${escapeHtml(entry.replacement)}</span>
+            <button data-idx="${i}" class="glossary-del-btn"><i class="fa-solid fa-xmark"></i></button>
+        `;
+        glossaryList.appendChild(row);
+    });
+    document.querySelectorAll('.glossary-del-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const idx = parseInt(btn.dataset.idx, 10);
+            const list = getGlossary();
+            list.splice(idx, 1);
+            saveGlossary(list);
+            renderGlossary();
+        });
+    });
+}
+
+function escapeHtml(str) {
+    const div = document.createElement('div');
+    div.textContent = str;
+    return div.innerHTML;
+}
+
+glossaryAddBtn.addEventListener('click', () => {
+    const term = glossaryTermInput.value.trim();
+    const repl = glossaryReplInput.value.trim();
+    if (!term || !repl) return;
+    const list = getGlossary();
+    list.push({ term, replacement: repl });
+    saveGlossary(list);
+    glossaryTermInput.value = '';
+    glossaryReplInput.value = '';
+    renderGlossary();
+});
+
+glossaryEnabledChk.addEventListener('change', () => {
+    localStorage.setItem(LS_GLOSSARY_ENABLED, glossaryEnabledChk.checked ? 'true' : 'false');
+});
+
+// Applies every glossary entry as a global (whole-conversation) find/replace pass
+function applyGlossary(text) {
+    if (!isGlossaryEnabled()) return text;
+    const list = getGlossary();
+    let output = text;
+    list.forEach(({ term, replacement }) => {
+        if (!term) return;
+        const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const re = new RegExp(escaped, 'g');
+        output = output.replace(re, replacement);
+    });
+    return output;
+}
+
+// =============================================================
+// Theme Toggle
+// =============================================================
+function applyTheme(theme) {
+    document.documentElement.setAttribute('data-theme', theme);
+    themeLabel.textContent = theme === 'dark' ? 'DARK' : 'LIGHT';
+    localStorage.setItem(LS_THEME, theme);
+}
+
+themeToggleBtn.addEventListener('click', () => {
+    const current = document.documentElement.getAttribute('data-theme') || 'dark';
+    applyTheme(current === 'dark' ? 'light' : 'dark');
+});
+
+// =============================================================
+// Init
+// =============================================================
+window.addEventListener('DOMContentLoaded', () => {
+    applyTheme(localStorage.getItem(LS_THEME) || 'dark');
+    initVoices();
+    loadKeysModelsIntoInputs();
+    renderGlossary();
+    glossaryEnabledChk.checked = isGlossaryEnabled();
+    setupBackgroundCanvas();
+    setupCanvasVisualizer();
+    setupEventListeners();
+    setStatus("SYSTEM READY // STANDBY", "text-emerald-400");
+});
+
+function initVoices() {
+    voiceSelect.innerHTML = '';
+    VOICES.forEach(v => {
+        const opt = document.createElement('option');
+        opt.value = v.id;
+        opt.textContent = v.name;
+        voiceSelect.appendChild(opt);
+    });
+    updateVoiceInfo();
+}
+
+function updateVoiceInfo() {
+    const selected = VOICES.find(v => v.id === voiceSelect.value);
+    if (selected) {
+        voiceInfo.innerHTML = `<i class="fa-solid fa-microchip text-pink-400"></i><span>${selected.detail}</span>`;
+    }
+}
+
+function setStatus(msg, colorClass) {
+    statusText.textContent = msg;
+    statusText.className = `${colorClass} font-semibold`;
+}
+
+// Animated Background Hologram Grid Canvas
+function setupBackgroundCanvas() {
+    const bgCanvas = document.getElementById('bgGridCanvas');
+    const ctx = bgCanvas.getContext('2d');
+
+    function resizeBg() {
+        bgCanvas.width = window.innerWidth;
+        bgCanvas.height = window.innerHeight;
+    }
+    resizeBg();
+    window.addEventListener('resize', resizeBg);
+
+    const particles = Array.from({ length: 45 }, () => ({
+        x: Math.random() * bgCanvas.width,
+        y: Math.random() * bgCanvas.height,
+        vx: (Math.random() - 0.5) * 0.5,
+        vy: (Math.random() - 0.5) * 0.5,
+        radius: Math.random() * 2 + 1,
+        color: Math.random() > 0.5 ? 'rgba(0, 243, 255, ' : 'rgba(255, 0, 85, '
+    }));
+
+    function drawBg() {
+        ctx.clearRect(0, 0, bgCanvas.width, bgCanvas.height);
+
+        for (let i = 0; i < particles.length; i++) {
+            for (let j = i + 1; j < particles.length; j++) {
+                const dx = particles[i].x - particles[j].x;
+                const dy = particles[i].y - particles[j].y;
+                const dist = Math.sqrt(dx * dx + dy * dy);
+
+                if (dist < 130) {
+                    ctx.beginPath();
+                    ctx.moveTo(particles[i].x, particles[i].y);
+                    ctx.lineTo(particles[j].x, particles[j].y);
+                    ctx.strokeStyle = `rgba(0, 243, 255, ${0.12 - dist / 1100})`;
+                    ctx.lineWidth = 0.6;
+                    ctx.stroke();
+                }
+            }
+        }
+
+        particles.forEach(p => {
+            p.x += p.vx;
+            p.y += p.vy;
+            if (p.x < 0 || p.x > bgCanvas.width) p.vx *= -1;
+            if (p.y < 0 || p.y > bgCanvas.height) p.vy *= -1;
+
+            ctx.beginPath();
+            ctx.arc(p.x, p.y, p.radius, 0, Math.PI * 2);
+            ctx.fillStyle = p.color + '0.6)';
+            ctx.fill();
+        });
+
+        requestAnimationFrame(drawBg);
+    }
+    drawBg();
+}
+
+function setupEventListeners() {
+    textInput.addEventListener('input', () => {
+        charCount.textContent = textInput.value.length;
+    });
+
+    clearBtn.addEventListener('click', () => {
+        textInput.value = '';
+        charCount.textContent = '0';
+        textInput.focus();
+    });
+
+    promptBtns.forEach(btn => {
+        btn.addEventListener('click', () => {
+            textInput.value = btn.dataset.text;
+            charCount.textContent = textInput.value.length;
+        });
+    });
+
+    voiceSelect.addEventListener('change', updateVoiceInfo);
+
+    speedSlider.addEventListener('input', (e) => {
+        const val = parseFloat(e.target.value).toFixed(1);
+        speedVal.textContent = `${val}x`;
+        audioPlayer.playbackRate = val;
+    });
+
+    clarityBoostBtn.addEventListener('click', () => {
+        clarityBoostActive = !clarityBoostActive;
+        clarityStatus.textContent = `Clarity Boost: ${clarityBoostActive ? 'ON' : 'OFF'}`;
+        clarityBoostBtn.classList.toggle('border-yellow-400', clarityBoostActive);
+        if (clarityFilterNode) {
+            clarityFilterNode.gain.value = clarityBoostActive ? 3.5 : 0;
+        }
+    });
+
+    spatial3dBtn.addEventListener('click', () => {
+        cyberReverbActive = !cyberReverbActive;
+        spatialStatus.textContent = `Cyber Reverb: ${cyberReverbActive ? 'ON' : 'OFF'}`;
+        spatial3dBtn.classList.toggle('border-pink-400', cyberReverbActive);
+    });
+
+    visSpectrumBtn.addEventListener('click', () => {
+        visualizerMode = 'spectrum';
+        visSpectrumBtn.className = "px-2 py-1 rounded bg-cyan-500 text-black font-bold";
+        visWaveBtn.className = "px-2 py-1 rounded bg-black/60 text-cyan-400 border border-cyan-500/30";
+    });
+
+    visWaveBtn.addEventListener('click', () => {
+        visualizerMode = 'waveform';
+        visWaveBtn.className = "px-2 py-1 rounded bg-cyan-500 text-black font-bold";
+        visSpectrumBtn.className = "px-2 py-1 rounded bg-black/60 text-cyan-400 border border-cyan-500/30";
+    });
+
+    generateBtn.addEventListener('click', handleSynthesizeAudio);
+
+    playPauseBtn.addEventListener('click', togglePlayPause);
+    audioPlayer.addEventListener('timeupdate', updateAudioProgress);
+    audioPlayer.addEventListener('loadedmetadata', () => {
+        timeTotal.textContent = formatTime(audioPlayer.duration);
+    });
+    audioPlayer.addEventListener('ended', () => {
+        playPauseBtn.innerHTML = '<i class="fa-solid fa-play ml-0.5 text-base"></i>';
+        setStatus("PLAYBACK COMPLETED", "text-emerald-400");
+    });
+
+    progressTrack.addEventListener('click', seekAudio);
+    downloadBtn.addEventListener('click', downloadWavAudio);
+
+    window.addEventListener('resize', setupCanvasVisualizer);
+}
+
+function base64ToArrayBuffer(base64) {
+    const binaryString = window.atob(base64);
+    const len = binaryString.length;
+    const bytes = new Uint8Array(len);
+    for (let i = 0; i < len; i++) {
+        bytes[i] = binaryString.charCodeAt(i);
+    }
+    return bytes.buffer;
+}
+
+function createWavBlob(pcmBuffer, sampleRate = 24000) {
+    const numChannels = 1;
+    const bitsPerSample = 16;
+    const byteRate = sampleRate * numChannels * (bitsPerSample / 8);
+    const blockAlign = numChannels * (bitsPerSample / 8);
+    const dataSize = pcmBuffer.byteLength;
+
+    const buffer = new ArrayBuffer(44 + dataSize);
+    const view = new DataView(buffer);
+
+    writeString(view, 0, 'RIFF');
+    view.setUint32(4, 36 + dataSize, true);
+    writeString(view, 8, 'WAVE');
+
+    writeString(view, 12, 'fmt ');
+    view.setUint32(16, 16, true);
+    view.setUint16(20, 1, true);
+    view.setUint16(22, numChannels, true);
+    view.setUint32(24, sampleRate, true);
+    view.setUint32(28, byteRate, true);
+    view.setUint16(32, blockAlign, true);
+    view.setUint16(34, bitsPerSample, true);
+
+    writeString(view, 36, 'data');
+    view.setUint32(40, dataSize, true);
+
+    const pcmBytes = new Uint8Array(pcmBuffer);
+    const targetBytes = new Uint8Array(buffer, 44);
+    targetBytes.set(pcmBytes);
+
+    return new Blob([buffer], { type: 'audio/wav' });
+}
+
+function writeString(view, offset, string) {
+    for (let i = 0; i < string.length; i++) {
+        view.setUint8(offset + i, string.charCodeAt(i));
+    }
+}
+
+// Smart Text Chunking Algorithm for Long Texts (up to 10000 chars)
+function splitTextIntoChunks(text, maxChunkLen = 1200) {
+    if (text.length <= maxChunkLen) return [text];
+
+    const chunks = [];
+    const sentenceDelimiters = /(?<=[။\.\?\!\n])/g;
+    const sentences = text.split(sentenceDelimiters).filter(s => s && s.trim().length > 0);
+
+    let currentChunk = "";
+
+    for (const sentence of sentences) {
+        if ((currentChunk + sentence).length > maxChunkLen) {
+            if (currentChunk.trim()) {
+                chunks.push(currentChunk.trim());
+            }
+            if (sentence.length > maxChunkLen) {
+                let subSentence = sentence;
+                while (subSentence.length > maxChunkLen) {
+                    let splitIdx = subSentence.lastIndexOf(' ', maxChunkLen);
+                    if (splitIdx === -1) splitIdx = maxChunkLen;
+                    chunks.push(subSentence.slice(0, splitIdx).trim());
+                    subSentence = subSentence.slice(splitIdx).trim();
+                }
+                currentChunk = subSentence;
+            } else {
+                currentChunk = sentence;
+            }
+        } else {
+            currentChunk += sentence;
+        }
+    }
+
+    if (currentChunk.trim()) {
+        chunks.push(currentChunk.trim());
+    }
+
+    return chunks;
+}
+
+// Single Chunk TTS Fetching Helper — rotates key/model on failure automatically
+async function synthesizeChunk(textChunk, voice) {
+    const totalCombos = Math.max(getKeys().length * getModels().length, 1);
+    const maxAttempts = Math.min(totalCombos, 12);
+
+    let cred = nextCredential();
+    let lastError;
+
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+        const { key, model } = cred;
+        const payload = {
+            contents: [{ parts: [{ text: textChunk }] }],
+            generationConfig: {
+                responseModalities: ["AUDIO"],
+                speechConfig: {
+                    voiceConfig: {
+                        prebuiltVoiceConfig: { voiceName: voice }
+                    }
+                }
+            }
+        };
+
+        const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`;
+
+        try {
+            const response = await fetch(apiUrl, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+
+            if (!response.ok) {
+                // Rotate away from rate-limited / invalid keys or unavailable models
+                if ([400, 401, 403, 404, 429].includes(response.status)) {
+                    lastError = new Error(`HTTP ${response.status} (key/model rotated)`);
+                    setStatus(`KEY/MODEL FAILED (${response.status}) — ROTATING...`, "text-yellow-400");
+                    cred = advanceCredential();
+                    continue;
+                }
+                throw new Error(`HTTP ${response.status}`);
+            }
+
+            const data = await response.json();
+            const inlineData = data?.candidates?.[0]?.content?.parts?.[0]?.inlineData;
+
+            if (inlineData && inlineData.data) {
+                const mime = inlineData.mimeType || '';
+                const match = mime.match(/rate=(\d+)/);
+                const sampleRate = match ? parseInt(match[1], 10) : 24000;
+                const pcmBuffer = base64ToArrayBuffer(inlineData.data);
+                return { pcmBuffer, sampleRate };
+            } else {
+                throw new Error("Invalid voice audio chunk response.");
+            }
+        } catch (e) {
+            lastError = e;
+            cred = advanceCredential();
+        }
+    }
+
+    throw lastError || new Error("All API keys/models failed.");
+}
+
+// Main Multi-Chunk High-Capacity TTS Synthesis Handler
+async function handleSynthesizeAudio() {
+    const rawText = textInput.value.trim();
+    if (!rawText) {
+        setStatus("ERROR: NO TEXT ENTERED // အချက်အလက်မရှိပါ", "text-red-400");
+        textInput.focus();
+        return;
+    }
+    if (getKeys().length === 0) {
+        setStatus("ERROR: NO API KEY // Key & Model panel တွင် key ထည့်ပါ", "text-red-400");
+        return;
+    }
+
+    if (isGenerating) return;
+    isGenerating = true;
+
+    const text = applyGlossary(rawText);
+    const voice = voiceSelect.value;
+    loadingOverlay.classList.remove('hidden');
+    customControls.classList.add('opacity-50', 'pointer-events-none');
+    generateBtn.disabled = true;
+    generateBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin mr-2"></i>ထုတ်လုပ်နေသည်...';
+
+    setStatus("CONNECTING TO NEURAL TTS CORE...", "text-yellow-400");
+
+    audioPlayer.pause();
+
+    try {
+        const chunks = splitTextIntoChunks(text, 1200);
+        const pcmBuffers = [];
+        let sampleRate = 24000;
+
+        if (chunks.length > 1) {
+            chunkProgressBarContainer.classList.remove('hidden');
+        } else {
+            chunkProgressBarContainer.classList.add('hidden');
+        }
+
+        for (let i = 0; i < chunks.length; i++) {
+            const currentChunkNum = i + 1;
+            const progressPct = Math.round((currentChunkNum / chunks.length) * 100);
+
+            loadingMainText.textContent = `SYNTHESIZING CHUNK ${currentChunkNum}/${chunks.length} (${progressPct}%)`;
+            loadingSubText.textContent = `စာပိုဒ် (${currentChunkNum}/${chunks.length}) အား နီယွန် စနစ်ဖြင့် ထုတ်လုပ်နေပါသည်...`;
+            chunkProgressBar.style.width = `${progressPct}%`;
+            setStatus(`PROCESSING CHUNK ${currentChunkNum}/${chunks.length}...`, "text-cyan-300");
+
+            const result = await synthesizeChunk(chunks[i], voice);
+            pcmBuffers.push(result.pcmBuffer);
+            if (result.sampleRate) sampleRate = result.sampleRate;
+        }
+
+        setStatus("STITCHING MULTI-CHUNK AUDIO STREAM...", "text-purple-300");
+
+        let totalPcmBytes = 0;
+        pcmBuffers.forEach(buf => totalPcmBytes += buf.byteLength);
+
+        const mergedPcm = new Uint8Array(totalPcmBytes);
+        let offset = 0;
+        pcmBuffers.forEach(buf => {
+            mergedPcm.set(new Uint8Array(buf), offset);
+            offset += buf.byteLength;
+        });
+
+        currentAudioBlob = createWavBlob(mergedPcm.buffer, sampleRate);
+
+        const audioUrl = URL.createObjectURL(currentAudioBlob);
+        audioPlayer.src = audioUrl;
+        audioPlayer.playbackRate = parseFloat(speedSlider.value);
+
+        customControls.classList.remove('opacity-50', 'pointer-events-none');
+        playPauseBtn.innerHTML = '<i class="fa-solid fa-play ml-0.5 text-base"></i>';
+        progressBar.style.width = '0%';
+
+        initWebAudioGraph();
+
+        setStatus("SYNTHESIS COMPLETE // READY TO PLAY", "text-emerald-400");
+
+        togglePlayPause();
+
+    } catch (err) {
+        console.error("TTS Synthesis Error:", err);
+        setStatus(`SYNTHESIS FAILED: ${err.message}`, "text-red-400");
+    } finally {
+        isGenerating = false;
+        loadingOverlay.classList.add('hidden');
+        generateBtn.disabled = false;
+        generateBtn.innerHTML = '<i class="fa-solid fa-bolt text-yellow-300 text-base"></i><span>အသံထုတ်လုပ်မည် (SYNTHESIZE)</span>';
+    }
+}
+
+function initWebAudioGraph() {
+    if (!audioCtx) {
+        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        analyser = audioCtx.createAnalyser();
+        analyser.fftSize = 256;
+
+        audioSource = audioCtx.createMediaElementSource(audioPlayer);
+
+        clarityFilterNode = audioCtx.createBiquadFilter();
+        clarityFilterNode.type = "peaking";
+        clarityFilterNode.frequency.value = 3200;
+        clarityFilterNode.Q.value = 1.0;
+        clarityFilterNode.gain.value = clarityBoostActive ? 3.5 : 0;
+
+        audioSource.connect(clarityFilterNode);
+        clarityFilterNode.connect(analyser);
+        analyser.connect(audioCtx.destination);
+    }
+}
+
+function togglePlayPause() {
+    if (!audioPlayer.src) return;
+
+    if (audioPlayer.paused) {
+        if (audioCtx && audioCtx.state === 'suspended') {
+            audioCtx.resume();
+        }
+        audioPlayer.play();
+        playPauseBtn.innerHTML = '<i class="fa-solid fa-pause text-base"></i>';
+        setStatus("PLAYING HI-FI AUDIO...", "text-cyan-400");
+        renderVisualizer();
+    } else {
+        audioPlayer.pause();
+        playPauseBtn.innerHTML = '<i class="fa-solid fa-play ml-0.5 text-base"></i>';
+        setStatus("PLAYBACK PAUSED", "text-yellow-400");
+    }
+}
+
+function updateAudioProgress() {
+    if (!audioPlayer.duration) return;
+    const pct = (audioPlayer.currentTime / audioPlayer.duration) * 100;
+    progressBar.style.width = `${pct}%`;
+    timeCurrent.textContent = formatTime(audioPlayer.currentTime);
+}
+
+function seekAudio(e) {
+    if (!audioPlayer.duration) return;
+    const rect = progressTrack.getBoundingClientRect();
+    const clickPos = (e.clientX - rect.left) / rect.width;
+    audioPlayer.currentTime = clickPos * audioPlayer.duration;
+}
+
+function formatTime(secs) {
+    if (isNaN(secs)) return "00:00";
+    const m = Math.floor(secs / 60);
+    const s = Math.floor(secs % 60);
+    return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+}
+
+function downloadWavAudio() {
+    if (!currentAudioBlob) return;
+    const url = URL.createObjectURL(currentAudioBlob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `Cyberpunk_TTS_2026_${Date.now()}.wav`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    setStatus("WAV AUDIO FILE EXPORTED", "text-emerald-400");
+}
+
+function setupCanvasVisualizer() {
+    visualizer.width = visualizer.offsetWidth;
+    visualizer.height = visualizer.offsetHeight;
+    const ctx = visualizer.getContext('2d');
+    ctx.clearRect(0, 0, visualizer.width, visualizer.height);
+
+    ctx.beginPath();
+    ctx.moveTo(0, visualizer.height / 2);
+    ctx.lineTo(visualizer.width, visualizer.height / 2);
+    ctx.strokeStyle = 'rgba(0, 243, 255, 0.4)';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+}
+
+function renderVisualizer() {
+    if (audioPlayer.paused) {
+        cancelAnimationFrame(animationFrameId);
+        return;
+    }
+
+    animationFrameId = requestAnimationFrame(renderVisualizer);
+
+    const ctx = visualizer.getContext('2d');
+    const width = visualizer.width;
+    const height = visualizer.height;
+
+    ctx.fillStyle = 'rgba(3, 5, 9, 0.35)';
+    ctx.fillRect(0, 0, width, height);
+
+    if (visualizerMode === 'spectrum') {
+        const bufferLen = analyser.frequencyBinCount;
+        const dataArray = new Uint8Array(bufferLen);
+        analyser.getByteFrequencyData(dataArray);
+
+        const barWidth = (width / bufferLen) * 2.2;
+        let x = 0;
+
+        for (let i = 0; i < bufferLen; i++) {
+            const barHeight = (dataArray[i] / 255) * height * 0.85;
+
+            const grad = ctx.createLinearGradient(0, height, 0, 0);
+            grad.addColorStop(0, '#00f3ff');
+            grad.addColorStop(0.6, '#9d00ff');
+            grad.addColorStop(1, '#ff0055');
+
+            ctx.fillStyle = grad;
+            ctx.fillRect(x, height - barHeight, barWidth - 1, barHeight);
+
+            x += barWidth;
+        }
+    } else {
+        const bufferLen = analyser.fftSize;
+        const dataArray = new Uint8Array(bufferLen);
+        analyser.getByteTimeDomainData(dataArray);
+
+        ctx.lineWidth = 2;
+        ctx.strokeStyle = '#00f3ff';
+        ctx.beginPath();
+
+        const sliceWidth = width * 1.0 / bufferLen;
+        let x = 0;
+
+        for (let i = 0; i < bufferLen; i++) {
+            const v = dataArray[i] / 128.0;
+            const y = v * height / 2;
+
+            if (i === 0) ctx.moveTo(x, y);
+            else ctx.lineTo(x, y);
+
+            x += sliceWidth;
+        }
+
+        ctx.lineTo(width, height / 2);
+        ctx.shadowBlur = 10;
+        ctx.shadowColor = '#00f3ff';
+        ctx.stroke();
+        ctx.shadowBlur = 0;
+    }
+}
