@@ -1,28 +1,71 @@
-# NEO-YANGON 2026 — Holographic Neural TTS Engine
+# NEO-YANGON 2026 — Transcribe + SRT Translator + Neural TTS Engine
 
-Gemini TTS ကို Key/Model auto-rotation နဲ့ browser ထဲကနေတိုက်ရိုက် ခေါ်သုံးတဲ့ static site။
+Static, client-side only app (no backend, no build step, no FFmpeg/Redis/Celery —
+everything below runs straight in the browser). Three tools in one page, designed as a
+pipeline: **Transcribe → Translate → Speak**.
 
-## ဖိုင်များ
-- `index.html` — UI structure
-- `style.css` — cyberpunk theme + light theme
-- `script.js` — TTS logic, key/model rotation, glossary, player
+1. **Media Transcribe** *(new)* — upload an `.mp4` / `.mp3` (or `.wav` / `.m4a` / `.webm`)
+   file and it's sent straight from the browser to a **Gladia + Groq (Whisper) key pool**
+   with auto rotation: on any error/timeout it automatically rotates to the next Gladia or
+   Groq key. Outputs three formats you can copy or download — a ready-made `.srt`, a plain
+   `transcript.txt`, and the raw `result.json` from whichever provider handled the job.
+   A "Send to Translator" button hands the generated SRT straight to tool #2.
+2. **SRT Translator** — paste/open an original `.srt`, pick a target language, and it
+   translates every subtitle line via the Gemini API while preserving index numbers and
+   timestamps. Multi-key + multi-model rotation, multiple parallel workers, retry/timeout
+   controls, and an optional glossary (find/replace) applied to the output.
+3. **Text → Speech** — the original Neural TTS engine (unchanged): multi-key/model
+   rotation, 8 voice presets, speed control, clarity boost, live spectrum/waveform
+   visualizer, and WAV download. Reachable from the Translator tab via "Send to TTS".
 
-## GitHub Pages မှာ run နည်း
-1. GitHub repo အသစ်တစ်ခုဖန်တီးပြီး ဒီဖိုင် ၃ ခု (index.html, style.css, script.js) ကို push လုပ်ပါ။
-2. Repo **Settings → Pages** ထဲမှာ Source ကို `main` branch / root ကို ရွေးပါ။
-3. Save လုပ်ရင် `https://<username>.github.io/<repo>/` link ထွက်လာပါမည်။
+All API keys are stored only in the browser's `localStorage`. Nothing is proxied through
+a server: the Transcribe tab talks directly to `api.gladia.io` and `api.groq.com`, and the
+Translator/TTS tabs talk directly to `generativelanguage.googleapis.com`.
 
-## API Key & Model ထည့်နည်း
-- Site ကိုဖွင့်ပြီး **"Key & Model Rotation"** panel ထဲမှာ Gemini API key(s) ကို တစ်ကြောင်းစီ (သို့) comma ခြားပြီး ထည့်ပါ။
-- "SAVE KEYS & MODELS" ကိုနှိပ်ပါ — key တွေကို browser ရဲ့ localStorage ထဲမှာပဲ သိမ်းပါတယ်၊ ဘယ် server ကိုမှ မပို့ပါ (GitHub Pages က static hosting ဖြစ်လို့ backend မရှိပါ)။
-- Request တိုင်းအတွက် key list ကို round-robin auto rotate လုပ်ပါမည်။ key တစ်ခု quota ကုန်/error တက်ရင် နောက် key ကို auto ပြောင်းသုံးပါမည်။
+> **Note on Gladia/Groq CORS:** both providers' REST APIs are designed to be called with a
+> server-side key, and this app deliberately calls them straight from the browser (same
+> philosophy as the Gemini calls above) so there's no backend to host. In practice this
+> has worked in testing, but if your browser blocks a request as cross-origin, that's a
+> provider-side CORS policy, not a bug in this page — the Transcribe tab will log the
+> failure and auto-rotate to the next key/provider in the pool either way.
 
-## Model List အကြောင်း
-`gemini-2.5-flash-preview-tts` နှင့် `gemini-2.5-pro-preview-tts` က verified Gemini TTS model id များဖြစ်ပါတယ်။ "3.1" စီးရီးကဲ့သို့ အခြား model အသစ်များ key access ရှိပါက Google AI Studio (https://aistudio.google.com) ထဲက **Models** စာရင်းမှာ exact model id ကို စစ်ဆေးပြီး "TTS Model List" box ထဲသို့ တစ်ကြောင်းချင်း ထပ်ထည့်နိုင်ပါတယ် — list ထဲမှာ ဘယ်နှစ်ခုပဲရှိရှိ auto rotation က အလုပ်လုပ်ပါလိမ့်မယ်။
+## Run locally
 
-## Glossary (Global Memory)
-"Global Memory / Glossary" panel ထဲမှာ စကားလုံး → အစားထိုးစာလုံး/အသံထွက် pair များ ထည့်ထားနိုင်ပြီး၊ Synthesize မလုပ်ခင် စာသားတစ်ခုလုံးအပေါ် global find-replace အဖြစ် auto apply လုပ်ပေးပါမည်။
+Just open `index.html` in a browser, or serve the folder with any static server, e.g.:
 
-## သတိပြုရန်
-- Key များကို client-side JS ကနေတိုက်ရိုက် Google API ကို ခေါ်သုံးခြင်းဖြစ်လို့ browser DevTools ကနေ key ကိုမြင်နိုင်ပါတယ် — public repo/site မှာ share မလုပ်ပါနဲ့၊ ကိုယ်ပိုင်သုံးရုံအတွက်သာ အသုံးပြုပါ။
-- Google Gemini API ရဲ့ pricing/rate limit/model availability က model အလိုက်၊ account tier အလိုက် ကွဲနိုင်လို့ https://ai.google.dev/pricing နဲ့ https://aistudio.google.com မှာ ကိုယ်ပိုင် key access ကို အမြဲစစ်ဆေးပါ။
+```bash
+python3 -m http.server 8000
+```
+
+## Deploy on GitHub Pages
+
+1. Create a new GitHub repo and push these three files (`index.html`, `style.css`,
+   `script.js`) to the root of the `main` branch.
+2. In the repo, go to **Settings → Pages**.
+3. Under **Build and deployment → Source**, choose **Deploy from a branch**.
+4. Branch: `main`, folder: `/ (root)` → **Save**.
+5. Wait a minute, then open the URL GitHub shows
+   (`https://<username>.github.io/<repo-name>/`).
+
+No build step, no secrets to configure — it's plain HTML/CSS/JS served as-is.
+
+## Notes
+
+- The Translator and TTS tools share the same Gemini API key list (entered once, in the
+  **Text to Speech** tab's "Key & Model Rotation" panel). The translator keeps its own
+  separate model list/rotation pointer so it never interferes with the TTS engine's model
+  rotation.
+- The **Transcribe** tab uses its own, separate key pool (Gladia keys + Groq keys, entered
+  in its own "Transcription Key Pool" panel) since those are different providers entirely.
+- The Global Memory / Glossary list is one shared list. It's editable from either the
+  **Text to Speech** tab or the **SRT Translator** tab (both show the same entries) and is
+  applied as a find/replace pass on the Translator's output before it's sent anywhere.
+- When translating into Myanmar, the translator prompt instructs the model to translate
+  for meaning/context (not word-for-word) and to never output the Myanmar punctuation
+  marks `။` / `၊` or the Western `!` / `?`. A post-processing pass strips any of those
+  four characters from the Myanmar output as a safety net, in case the model outputs one
+  anyway.
+- "Send to Translator" on the Transcribe tab's output panel copies the generated `.srt`
+  straight into the SRT Translator tab.
+- "Send to TTS" on the translator's output panel copies the translated dialogue straight
+  into the Text-to-Speech tab so you can narrate it immediately.
