@@ -1110,6 +1110,13 @@ if (saveContextMemoryBtn) {
         setTimeout(() => { contextMemorySavedMsg.textContent = ''; }, 2000);
     });
 }
+// Auto-save as the user types, so hitting TRANSLATE without clicking SAVE first
+// still uses the current text (SAVE stays as an explicit "yes, saved" confirmation).
+if (globalContextMemory) {
+    globalContextMemory.addEventListener('input', () => {
+        saveContextMemory(globalContextMemory.value);
+    });
+}
 if (contextMemoryEnabledChk) {
     contextMemoryEnabledChk.addEventListener('change', () => {
         localStorage.setItem(LS_CONTEXT_MEMORY_ENABLED, contextMemoryEnabledChk.checked ? 'true' : 'false');
@@ -1398,6 +1405,14 @@ async function handleTranslateSrt() {
     if (isTranslating) return;
     isTranslating = true;
     translationAborted = false;
+
+    // Guarantee the textarea's current text is what gets used this run, even if the
+    // user never clicked SAVE (the 'input' auto-save above covers normal typing, this
+    // is just a hard guarantee against any race).
+    if (globalContextMemory) saveContextMemory(globalContextMemory.value);
+    if (isContextMemoryEnabled() && getContextMemory().trim()) {
+        logTrans('Global Context Memory ပါဝင်စေပြီး ဘာသာပြန်ပါမည်', 'ok');
+    }
 
     const chunkSize = Math.max(parseInt(chunkSizeInput.value, 10) || 30, 1);
     const maxRetries = Math.max(parseInt(maxRetriesInput.value, 10) || 3, 1);
