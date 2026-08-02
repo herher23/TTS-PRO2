@@ -945,9 +945,12 @@ const LS_TRANS_MODEL_IDX = 'neoyangon_trans_model_idx';
 const LS_ACTIVE_TAB = 'neoyangon_active_tab';
 
 const DEFAULT_TRANS_MODELS = [
-    "gemini-2.5-flash",
-    "gemini-2.5-flash-lite",
-    "gemini-2.0-flash"
+    "gemini-3.6-flash",
+    "gemini-3.5-flash",
+    "gemini-3.5-flash-lite"
+"gemini-3-flash-preview"
+"gemini-3.1-flash-lite"
+"gemini-3.1-pro-preview"
 ];
 
 let translationAborted = false;
