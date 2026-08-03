@@ -1533,8 +1533,8 @@ window.addEventListener('DOMContentLoaded', () => {
 // ═══════════════════════════════════════════════════════════════════════════════════════════
 //  MEDIA TRANSCRIPTION MODULE — appended module, does not modify any code above this line
 //  (aside from the shared switchToolView()/tab wiring near the top of the file).
-//  Upload MP4/MP3 → Gladia + Groq key pool with auto rotation → SRT / TXT / JSON output.
-//  Fully client-side: files go straight from the browser to api.gladia.io / api.groq.com.
+//  Upload MP4/MP3 → Gladia + Groq + AssemblyAI key pool with auto rotation → SRT / TXT / JSON output.
+//  Fully client-side: files go straight from the browser to api.gladia.io / api.groq.com / api.assemblyai.com.
 // =============================================================================================
 
 // ---- DOM Element Cache (Transcribe view) ----
@@ -1543,10 +1543,12 @@ const transcribeKeyPanelBody = document.getElementById('transcribeKeyPanelBody')
 const gladiaKeysInput = document.getElementById('gladiaKeysInput');
 const groqKeysInput = document.getElementById('groqKeysInput');
 const groqModelSelect = document.getElementById('groqModelSelect');
+const assemblyaiKeysInput = document.getElementById('assemblyaiKeysInput');
 const saveTranscribeKeysBtn = document.getElementById('saveTranscribeKeysBtn');
 const transcribeSaveStatusMsg = document.getElementById('transcribeSaveStatusMsg');
 const gladiaKeyCountBadge = document.getElementById('gladiaKeyCountBadge');
 const groqKeyCountBadge = document.getElementById('groqKeyCountBadge');
+const assemblyaiKeyCountBadge = document.getElementById('assemblyaiKeyCountBadge');
 
 const mediaFileInput = document.getElementById('mediaFileInput');
 const mediaFileDropzone = document.getElementById('mediaFileDropzone');
@@ -1577,6 +1579,7 @@ const sendTranscribeToTranslatorBtn = document.getElementById('sendTranscribeToT
 const LS_GLADIA_KEYS = 'neoyangon_gladia_keys';
 const LS_GROQ_KEYS = 'neoyangon_groq_keys';
 const LS_GROQ_MODEL = 'neoyangon_groq_model';
+const LS_ASSEMBLYAI_KEYS = 'neoyangon_assemblyai_keys';
 const LS_TRANSCRIBE_IDX = 'neoyangon_transcribe_idx';
 
 let selectedMediaFile = null;
@@ -1592,23 +1595,27 @@ let activeOutputFormat = 'srt';
 function getGladiaKeys() { return parseListInput(localStorage.getItem(LS_GLADIA_KEYS) || ''); }
 function getGroqKeys() { return parseListInput(localStorage.getItem(LS_GROQ_KEYS) || ''); }
 function getGroqModel() { return localStorage.getItem(LS_GROQ_MODEL) || 'whisper-large-v3-turbo'; }
+function getAssemblyAiKeys() { return parseListInput(localStorage.getItem(LS_ASSEMBLYAI_KEYS) || ''); }
 
 function getTranscribeCredentialPool() {
     const pool = [];
     getGladiaKeys().forEach(key => pool.push({ provider: 'gladia', key }));
     getGroqKeys().forEach(key => pool.push({ provider: 'groq', key }));
+    getAssemblyAiKeys().forEach(key => pool.push({ provider: 'assemblyai', key }));
     return pool;
 }
 
 function updateTranscribeBadges() {
     gladiaKeyCountBadge.textContent = getGladiaKeys().length;
     groqKeyCountBadge.textContent = getGroqKeys().length;
+    assemblyaiKeyCountBadge.textContent = getAssemblyAiKeys().length;
 }
 
 function loadTranscribeKeysIntoInputs() {
     gladiaKeysInput.value = (localStorage.getItem(LS_GLADIA_KEYS) || '').split(',').join('\n').trim();
     groqKeysInput.value = (localStorage.getItem(LS_GROQ_KEYS) || '').split(',').join('\n').trim();
     groqModelSelect.value = getGroqModel();
+    assemblyaiKeysInput.value = (localStorage.getItem(LS_ASSEMBLYAI_KEYS) || '').split(',').join('\n').trim();
     updateTranscribeBadges();
 }
 
@@ -1616,6 +1623,7 @@ saveTranscribeKeysBtn.addEventListener('click', () => {
     localStorage.setItem(LS_GLADIA_KEYS, gladiaKeysInput.value.trim());
     localStorage.setItem(LS_GROQ_KEYS, groqKeysInput.value.trim());
     localStorage.setItem(LS_GROQ_MODEL, groqModelSelect.value);
+    localStorage.setItem(LS_ASSEMBLYAI_KEYS, assemblyaiKeysInput.value.trim());
     setIndex(LS_TRANSCRIBE_IDX, 0, getTranscribeCredentialPool().length);
     updateTranscribeBadges();
     transcribeSaveStatusMsg.textContent = 'သိမ်းပြီးပါပြီ ✓';
@@ -1632,7 +1640,7 @@ toggleTranscribeKeyPanelBtn.addEventListener('click', () => {
 // Round-robin picker across the COMBINED Gladia+Groq pool
 function nextTranscribeCredential() {
     const pool = getTranscribeCredentialPool();
-    if (pool.length === 0) throw new Error('Gladia/Groq API key မရှိပါ — Key Pool panel တွင် အနည်းဆုံး key တစ်ခု ထည့်ပါ။');
+    if (pool.length === 0) throw new Error('Gladia/Groq/AssemblyAI API key မရှိပါ — Key Pool panel တွင် အနည်းဆုံး key တစ်ခု ထည့်ပါ။');
     const idx = getIndex(LS_TRANSCRIBE_IDX, pool.length);
     setIndex(LS_TRANSCRIBE_IDX, idx + 1, pool.length);
     return pool[idx];
@@ -1837,11 +1845,93 @@ async function callGladiaTranscribe(key, file, language, timeoutSec, onLog) {
 }
 
 // =============================================================
-// Combined retry/rotate driver across the Gladia+Groq pool
+// AssemblyAI transcription call — upload → create transcript → poll → sentences
+// =============================================================
+async function callAssemblyAiTranscribe(key, file, language, timeoutSec, onLog) {
+    const controller = new AbortController();
+    activeTranscribeAbortControllers.push(controller);
+    const hardTimer = setTimeout(() => controller.abort(), Math.max(timeoutSec, 30) * 1000);
+
+    try {
+        // Step 1 — upload the raw audio/video bytes, get back a temporary upload_url
+        const uploadRes = await fetch('https://api.assemblyai.com/v2/upload', {
+            method: 'POST',
+            headers: { 'Authorization': key },
+            body: file,
+            signal: controller.signal
+        });
+        if (!uploadRes.ok) throw new Error(`AssemblyAI upload HTTP ${uploadRes.status}`);
+        const uploadData = await uploadRes.json();
+
+        // Step 2 — create the transcript job
+        const jobBody = { audio_url: uploadData.upload_url, punctuate: true, format_text: true };
+        if (language && language !== 'auto') jobBody.language_code = language;
+        else jobBody.language_detection = true;
+
+        const jobRes = await fetch('https://api.assemblyai.com/v2/transcript', {
+            method: 'POST',
+            headers: { 'Authorization': key, 'Content-Type': 'application/json' },
+            body: JSON.stringify(jobBody),
+            signal: controller.signal
+        });
+        if (!jobRes.ok) throw new Error(`AssemblyAI job HTTP ${jobRes.status}`);
+        const jobData = await jobRes.json();
+        const transcriptId = jobData.id;
+
+        // Step 3 — poll until done
+        const maxPolls = Math.max(Math.floor(timeoutSec / 3), 8);
+        for (let i = 0; i < maxPolls; i++) {
+            await sleep(3000);
+            const pollRes = await fetch(`https://api.assemblyai.com/v2/transcript/${transcriptId}`, {
+                headers: { 'Authorization': key },
+                signal: controller.signal
+            });
+            if (!pollRes.ok) throw new Error(`AssemblyAI poll HTTP ${pollRes.status}`);
+            const pollData = await pollRes.json();
+
+            if (pollData.status === 'completed') {
+                // Best-effort sentence-level timestamps for SRT — falls back to plain text if unavailable
+                let segments = [];
+                try {
+                    const sentRes = await fetch(`https://api.assemblyai.com/v2/transcript/${transcriptId}/sentences`, {
+                        headers: { 'Authorization': key },
+                        signal: controller.signal
+                    });
+                    if (sentRes.ok) {
+                        const sentData = await sentRes.json();
+                        segments = (sentData.sentences || []).map(s => ({
+                            start: s.start / 1000, end: s.end / 1000, text: (s.text || '').trim()
+                        }));
+                    }
+                } catch (e) { /* sentence breakdown is optional */ }
+                return {
+                    fullText: (pollData.text || '').trim(),
+                    segments,
+                    srtDirect: null,
+                    raw: pollData
+                };
+            }
+            if (pollData.status === 'error') {
+                throw new Error(`AssemblyAI error: ${pollData.error || 'unknown'}`);
+            }
+            if (onLog) onLog(`[ASSEMBLYAI] status: ${pollData.status}...`);
+        }
+        throw new Error('AssemblyAI timeout — ရလဒ်စောင့်ချိန် ကျော်လွန်သွားပါသည်');
+    } catch (e) {
+        if (e.name === 'AbortError') throw new Error(transcribeAborted ? 'Stopped by user' : `Timeout (${timeoutSec}s)`);
+        throw e;
+    } finally {
+        clearTimeout(hardTimer);
+        activeTranscribeAbortControllers = activeTranscribeAbortControllers.filter(c => c !== controller);
+    }
+}
+
+// =============================================================
+// Combined retry/rotate driver across the Gladia+Groq+AssemblyAI pool
 // =============================================================
 async function transcribeMediaWithRotation(file, language, maxRetries, timeoutSec, onLog) {
     const pool = getTranscribeCredentialPool();
-    if (pool.length === 0) throw new Error('Gladia/Groq API key မရှိပါ။');
+    if (pool.length === 0) throw new Error('Gladia/Groq/AssemblyAI API key မရှိပါ။');
 
     const totalAttempts = Math.min(pool.length * Math.max(maxRetries, 1), 15);
     let cred = nextTranscribeCredential();
@@ -1853,6 +1943,8 @@ async function transcribeMediaWithRotation(file, language, maxRetries, timeoutSe
         try {
             const result = cred.provider === 'groq'
                 ? await callGroqTranscribe(cred.key, file, language, timeoutSec)
+                : cred.provider === 'assemblyai'
+                ? await callAssemblyAiTranscribe(cred.key, file, language, timeoutSec, onLog)
                 : await callGladiaTranscribe(cred.key, file, language, timeoutSec, onLog);
             return { ...result, provider: cred.provider };
         } catch (e) {
@@ -1863,7 +1955,7 @@ async function transcribeMediaWithRotation(file, language, maxRetries, timeoutSe
             if (!cred) break;
         }
     }
-    throw lastErr || new Error('Gladia/Groq providers အားလုံး failed ဖြစ်သွားပါသည်');
+    throw lastErr || new Error('Gladia/Groq/AssemblyAI providers အားလုံး failed ဖြစ်သွားပါသည်');
 }
 
 // =============================================================
@@ -1883,7 +1975,7 @@ async function handleTranscribeMedia() {
         return;
     }
     if (getTranscribeCredentialPool().length === 0) {
-        logTranscribe('ERROR: Gladia/Groq API key မရှိပါ — Key Pool panel တွင် key ထည့်ပါ', 'err');
+        logTranscribe('ERROR: Gladia/Groq/AssemblyAI API key မရှိပါ — Key Pool panel တွင် key ထည့်ပါ', 'err');
         return;
     }
     if (isTranscribing) return;
@@ -2045,7 +2137,7 @@ window.addEventListener('DOMContentLoaded', () => {
 // ═══════════════════════════════════════════════════════════════════════════════════════════
 //  AI RECAP STUDIO MODULE — appended module, does not modify any code above this line
 //  (aside from the shared switchToolView()/tab wiring near the top of the file).
-//  One Click: Upload → Transcribe (reuses Transcribe tab's Gladia/Groq key pool) → Gemini
+//  One Click: Upload → Transcribe (reuses Transcribe tab's Gladia/Groq/AssemblyAI key pool) → Gemini
 //  (reuses TTS tab's Gemini key pool, own model list) → Clean Transcript + Myanmar
 //  Translation + Recap (Summary/Key Points/Chapters) + Titles, in a single structured call.
 //  Fully client-side — no backend, no FFmpeg, no video merge (see scope note in the UI).
@@ -2400,7 +2492,7 @@ async function handleGenerateRecap() {
         return;
     }
     if (getTranscribeCredentialPool().length === 0) {
-        logRecap('ERROR: Gladia/Groq API key မရှိပါ — "မီဒီယာ → SRT" tab ရဲ့ Key Pool panel တွင် key ထည့်ပါ', 'err');
+        logRecap('ERROR: Gladia/Groq/AssemblyAI API key မရှိပါ — "မီဒီယာ → SRT" tab ရဲ့ Key Pool panel တွင် key ထည့်ပါ', 'err');
         return;
     }
     if (getKeys().length === 0) {
@@ -2429,7 +2521,7 @@ async function handleGenerateRecap() {
     logRecap(`ဖိုင် "${selectedRecapFile.name}" (${formatBytes(selectedRecapFile.size)}) — ONE CLICK စတင်နေသည်...`);
 
     try {
-        // Step 1 — Transcribe (reuses the Transcribe tab's Gladia/Groq key pool + rotation)
+        // Step 1 — Transcribe (reuses the Transcribe tab's Gladia/Groq/AssemblyAI key pool + rotation)
         const transcript = await transcribeMediaWithRotation(selectedRecapFile, language, maxRetries, timeoutSec, (msg, lvl) => logRecap(msg, lvl));
         if (recapAborted || transcribeAborted) throw new Error('Stopped by user');
         if (!transcript.fullText || !transcript.fullText.trim()) throw new Error('Transcript ဗလာဖြစ်နေပါသည် — ဖိုင်ကို ပြန်စစ်ပါ');

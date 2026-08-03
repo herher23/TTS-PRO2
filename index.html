@@ -623,7 +623,7 @@
                     <div class="flex items-center gap-3">
                         <i class="fa-solid fa-key text-orange-400 text-lg"></i>
                         <h2 class="font-orbitron font-bold text-lg tracking-wide text-white">
-                            Transcription Key Pool <span class="text-xs font-mono text-orange-400/70 font-normal">(GLADIA + GROQ / AUTO ROTATE)</span>
+                            Transcription Key Pool <span class="text-xs font-mono text-orange-400/70 font-normal">(GLADIA + GROQ + ASSEMBLYAI / AUTO ROTATE)</span>
                         </h2>
                     </div>
                     <button id="toggleTranscribeKeyPanelBtn" class="font-mono text-xs text-orange-300 border border-orange-500/30 rounded px-2 py-1 hover:bg-orange-900/40">
@@ -658,9 +658,17 @@
                         </select>
                     </div>
 
+                    <div>
+                        <label class="block font-mono text-xs text-emerald-300 uppercase tracking-widest mb-2 font-semibold">
+                            AssemblyAI API Keys (တစ်ကြောင်းလျှင် တစ်ခု / comma လည်းရ)
+                        </label>
+                        <textarea id="assemblyaiKeysInput" rows="2" placeholder="aai_key_1&#10;aai_key_2"
+                            class="w-full p-3 rounded-lg bg-black/60 border border-emerald-500/30 text-emerald-200 placeholder-emerald-800/60 font-mono text-xs focus:outline-none focus:border-orange-500/80 resize-y"></textarea>
+                    </div>
+
                     <p class="font-mono text-[10px] text-cyan-500/60">
                         <i class="fa-solid fa-circle-info mr-1"></i>
-                        Key နှစ်မျိုးလုံးကို round-robin rotate လုပ်ပြီး failure/timeout ဖြစ်ရင် (Gladia ဖြစ်စေ Groq ဖြစ်စေ) နောက် key ကို auto ပြောင်းသုံးပါမည်။ Key များကို browser ထဲမှာသာ (localStorage) သိမ်းပြီး Gladia/Groq server ကိုသာ တိုက်ရိုက်ပို့ပါသည်။
+                        Key သုံးမျိုးလုံးကို round-robin rotate လုပ်ပြီး failure/timeout ဖြစ်ရင် (Gladia ဖြစ်စေ Groq ဖြစ်စေ AssemblyAI ဖြစ်စေ) နောက် key ကို auto ပြောင်းသုံးပါမည်။ Key များကို browser ထဲမှာသာ (localStorage) သိမ်းပြီး ၎င်း provider ၏ server ကိုသာ တိုက်ရိုက်ပို့ပါသည်။
                     </p>
 
                     <div class="flex flex-wrap items-center gap-3">
@@ -670,6 +678,7 @@
                         <span id="transcribeSaveStatusMsg" class="font-mono text-xs text-orange-400"></span>
                         <span class="font-mono text-[10px] px-2 py-1 rounded bg-black/50 border border-cyan-500/30 text-cyan-300">GLADIA: <strong id="gladiaKeyCountBadge" class="text-white">0</strong></span>
                         <span class="font-mono text-[10px] px-2 py-1 rounded bg-black/50 border border-pink-500/30 text-pink-300">GROQ: <strong id="groqKeyCountBadge" class="text-white">0</strong></span>
+                        <span class="font-mono text-[10px] px-2 py-1 rounded bg-black/50 border border-emerald-500/30 text-emerald-300">ASSEMBLYAI: <strong id="assemblyaiKeyCountBadge" class="text-white">0</strong></span>
                     </div>
                 </div>
             </div>
@@ -819,7 +828,7 @@
                 <div id="recapKeyPanelBody" class="space-y-4">
                     <p class="font-mono text-[10px] text-cyan-500/60 -mt-1">
                         <i class="fa-solid fa-circle-info mr-1"></i>
-                        Gemini API Key များကို "Text to Speech" tab ရဲ့ <strong class="text-cyan-300">Key &amp; Model Rotation</strong> panel အတူတူပဲ သုံးပါသည်။ Audio Transcribe အတွက်တော့ "မီဒီယာ → SRT" tab ရဲ့ <strong class="text-orange-300">Transcription Key Pool</strong> (Gladia/Groq) ကို အတူတူသုံးပါသည် — ဒီနေရာမှာ ထပ်ထည့်စရာမလိုပါ။
+                        Gemini API Key များကို "Text to Speech" tab ရဲ့ <strong class="text-cyan-300">Key &amp; Model Rotation</strong> panel အတူတူပဲ သုံးပါသည်။ Audio Transcribe အတွက်တော့ "မီဒီယာ → SRT" tab ရဲ့ <strong class="text-orange-300">Transcription Key Pool</strong> (Gladia/Groq/AssemblyAI) ကို အတူတူသုံးပါသည် — ဒီနေရာမှာ ထပ်ထည့်စရာမလိုပါ။
                     </p>
                     <div>
                         <label class="block font-mono text-xs text-pink-300 uppercase tracking-widest mb-2 font-semibold">
