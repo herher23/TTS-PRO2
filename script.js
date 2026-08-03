@@ -1569,6 +1569,7 @@ const transcribeDoneBadge = document.getElementById('transcribeDoneBadge');
 const outFormatSrtBtn = document.getElementById('outFormatSrtBtn');
 const outFormatTxtBtn = document.getElementById('outFormatTxtBtn');
 const outFormatJsonBtn = document.getElementById('outFormatJsonBtn');
+const fixTimestampsBtn = document.getElementById('fixTimestampsBtn');
 const copyTranscribeBtn = document.getElementById('copyTranscribeBtn');
 const downloadTranscribeBtn = document.getElementById('downloadTranscribeBtn');
 const transcribeOutput = document.getElementById('transcribeOutput');
@@ -2125,6 +2126,197 @@ sendTranscribeToTranslatorBtn.addEventListener('click', () => {
     transProgressPanel.classList.remove('hidden');
     logTrans('TRANSCRIBE tab မှ SRT လက်ခံရရှိပါပြီ ✓', 'ok');
 });
+
+// =============================================================
+// AI TIMESTAMP FIX — Gemini multimodal re-timing pass
+// Sends the original media file (audio or video, inline) + the current SRT
+// to Gemini so it can listen/watch the actual media and correct drift —
+// text content is left untouched, only start/end timing is refined.
+// Reuses the same Gemini API keys as the TTS tab's Key & Model panel,
+// with its own small model list + rotation pointer.
+// =============================================================
+const LS_TIMEFIX_MODEL_IDX = 'neoyangon_timefix_model_idx';
+const DEFAULT_TIMEFIX_MODELS = [
+    "gemini-3.6-flash",
+    "gemini-3.5-flash"
+];
+function getTimefixModels() { return DEFAULT_TIMEFIX_MODELS.slice(); }
+
+function nextTimefixCredential() {
+    const keys = getKeys();
+    const models = getTimefixModels();
+    if (keys.length === 0) throw new Error('API key မထည့်ရသေးပါ — "Text to Speech" tab ထဲက Key & Model Rotation panel တွင် Gemini API key အနည်းဆုံးတစ်ခု ထည့်ပါ။');
+    const keyIdx = getIndex(LS_KEY_IDX, keys.length);
+    const modelIdx = getIndex(LS_TIMEFIX_MODEL_IDX, models.length);
+    setIndex(LS_KEY_IDX, keyIdx + 1, keys.length);
+    if (keyIdx + 1 >= keys.length) setIndex(LS_TIMEFIX_MODEL_IDX, modelIdx + 1, models.length);
+    updateBadges();
+    return { key: keys[keyIdx], model: models[modelIdx] };
+}
+function advanceTimefixCredential() {
+    const keys = getKeys();
+    const models = getTimefixModels();
+    if (keys.length === 0) return null;
+    const keyIdx = getIndex(LS_KEY_IDX, keys.length);
+    setIndex(LS_KEY_IDX, keyIdx + 1, keys.length);
+    if (keyIdx + 1 >= keys.length) {
+        const modelIdx = getIndex(LS_TIMEFIX_MODEL_IDX, models.length);
+        setIndex(LS_TIMEFIX_MODEL_IDX, modelIdx + 1, models.length);
+    }
+    updateBadges();
+    return { key: keys[getIndex(LS_KEY_IDX, keys.length)], model: models[getIndex(LS_TIMEFIX_MODEL_IDX, models.length)] };
+}
+
+const TIMESTAMP_FIX_SYSTEM_PROMPT =
+`သင်သည် ပရော်ဖက်ရှင်နယ် SRT subtitle AI ဖြစ်သည် — အသံနှင့်ရုပ်ပုံ ဘာသာပြန်ဆိုခြင်းနှင့် စာတန်းထိုးအချိန်ညှိခြင်းဆိုင်ရာ ကျွမ်းကျင်ပညာရှင်။
+
+ရည်ရွယ်ချက်: ပေးပို့လာသော ဗီဒီယို သို့မဟုတ် အော်ဒီယိုဖိုင်ကို အခြေခံ၍ အလွန်တိကျသည့် SRT timestamp များကို ထုတ်ပေးရန်ဖြစ်ပြီး၊ စာသားများသည် ပြောဆိုသည့်စကားလုံးများနှင့် ရုပ်ပြင်လှုပ်ရှားမှုများအပေါ် အချိန်ကိုက် တိတိကျကျဖြစ်စေရန် ဆောင်ရွက်ပေးပါမည်။
+
+လုပ်ငန်းဆိုင်ရာ လိုအပ်ချက်များ:
+၁။ အသံနှင့်ရုပ်ပုံ အချိန်ညှိခြင်း —
+• စကားပြောဆိုမှု၏ အစနှင့် အဆုံး အချိန်အတိအကျကို သိရှိနိုင်ရန် အသံ/ဗီဒီယိုလှိုင်းများကို ခွဲခြမ်းစိတ်ဖြာပါ။
+• SRT timestamp များသည် နှုတ်ခမ်းလှုပ်ရှားမှု (ဗီဒီယိုတွင်) သို့မဟုတ် အသံထွက်လာသည့်အချိန် (အော်ဒီယိုတွင်) နှင့် တိကျစွာ ကိုက်ညီမှုရှိစေရန် ဆောင်ရွက်ပါ။
+• စာတန်းများ နောက်ကျခြင်း သို့မဟုတ် အချိန်တိုအတွင်း ပျောက်ကွယ်သွားခြင်းမျိုး မဖြစ်စေဘဲ သဘာဝကျသော ဖတ်ရှုနှုန်းကို ထိန်းသိမ်းပါ။
+
+ကန့်သတ်ချက်များ:
+• အချိန်ကွာဟမှုမရှိစေရန် ညှိနှိုင်းခြင်း — စာသားနှင့် အသံ ထပ်တူမကျခြင်းမျိုး လုံးဝမရှိစေရန် "စကားပြောနှင့် အချိန်ကိုက်မှု" တိကျမှုကို ဦးစားပေးပါ။`;
+
+function buildTimestampFixPrompt(existingSrt) {
+    return `${TIMESTAMP_FIX_SYSTEM_PROMPT}
+
+အောက်ပါ SRT မူကြမ်းသည် speech-to-text engine (Gladia/Groq/AssemblyAI) မှ auto-generate လုပ်ထားသော ရလဒ်ဖြစ်ပြီး timestamp အချို့ လွဲနေနိုင်ပါသည်။ တွဲပါ media file ကို တိုက်ရိုက် နားထောင်/ကြည့်ပြီး အထက်ပါ standard များနှင့်အညီ timestamp တိုင်းကို ပြန်လည်တိကျအောင် ချိန်ညှိပါ။ စာသားအကြောင်းအရာ (subtitle text) ကို လုံးဝမပြောင်းလဲပါနှင့် — start/end timing ကိုသာ ပြင်ဆင်ပေးပါ။ ပုံစံအတိအကျ (sequence number → timestamp line → text) ပါဝင်သော ပြင်ဆင်ပြီးသား SRT အပြည့်အစုံကိုသာ ပြန်ပေးပါ။
+
+--- ORIGINAL SRT START ---
+${existingSrt}
+--- ORIGINAL SRT END ---`;
+}
+
+function fileToBase64(file) {
+    return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result).split(',')[1] || '');
+        reader.onerror = () => reject(new Error('File ကို base64 ပြောင်းရာတွင် error တက်ပါသည်'));
+        reader.readAsDataURL(file);
+    });
+}
+
+async function callGeminiFixTimestamps(mediaFile, existingSrt, maxRetries, timeoutSec, onLog) {
+    let cred = nextTimefixCredential();
+    let lastErr;
+
+    const responseSchema = { type: "OBJECT", properties: { srt: { type: "STRING" } }, required: ["srt"] };
+    const base64Data = await fileToBase64(mediaFile);
+    const mimeType = mediaFile.type || 'application/octet-stream';
+
+    for (let attempt = 0; attempt < Math.max(maxRetries, 1); attempt++) {
+        if (transcribeAborted) throw new Error('Stopped by user');
+        const controller = new AbortController();
+        activeTranscribeAbortControllers.push(controller);
+        const timer = setTimeout(() => controller.abort(), Math.max(timeoutSec, 30) * 1000);
+
+        try {
+            if (onLog) onLog(`[TIMESTAMP-FIX] ${cred.model} ဖြင့် media ကို ခွဲခြမ်းစိတ်ဖြာနေသည် (attempt ${attempt + 1}/${Math.max(maxRetries, 1)})...`);
+
+            const payload = {
+                contents: [{
+                    parts: [
+                        { inline_data: { mime_type: mimeType, data: base64Data } },
+                        { text: buildTimestampFixPrompt(existingSrt) }
+                    ]
+                }],
+                generationConfig: { responseMimeType: "application/json", responseSchema }
+            };
+            const apiUrl = `https://vpn-my-proxy.speedify730.workers.dev/?https://generativelanguage.googleapis.com/v1beta/models/${cred.model}:generateContent?key=${cred.key}`;
+
+            const response = await fetch(apiUrl, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload),
+                signal: controller.signal
+            });
+            clearTimeout(timer);
+
+            if (!response.ok) {
+                if ([400, 401, 403, 404, 413, 429].includes(response.status)) {
+                    if (onLog) onLog(`HTTP ${response.status} — key/model rotating...`, 'warn');
+                    const next = advanceTimefixCredential();
+                    lastErr = new Error(`HTTP ${response.status}`);
+                    if (!next) break;
+                    cred = next;
+                    continue;
+                }
+                throw new Error(`HTTP ${response.status}`);
+            }
+
+            const data = await response.json();
+            const raw = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+            if (!raw) throw new Error('Empty response from model');
+
+            const obj = extractJsonObject(raw);
+            if (!obj.srt || !obj.srt.trim()) throw new Error('Incomplete response from model');
+            return obj.srt.trim() + '\n';
+
+        } catch (e) {
+            clearTimeout(timer);
+            if (e.name === 'AbortError') {
+                lastErr = new Error('Timeout');
+                if (onLog) onLog(`Timeout (${timeoutSec}s) — retrying...`, 'warn');
+            } else {
+                lastErr = e;
+            }
+            const next = advanceTimefixCredential();
+            if (!next) break;
+            cred = next;
+        } finally {
+            activeTranscribeAbortControllers = activeTranscribeAbortControllers.filter(c => c !== controller);
+        }
+    }
+    throw lastErr || new Error('AI Timestamp Fix — retries အားလုံး failed ဖြစ်သွားပါသည်');
+}
+
+async function handleFixTimestamps() {
+    if (!currentTranscribeResult || !currentTranscribeResult.srt) {
+        logTranscribe('ERROR: ပထမဆုံး TRANSCRIBE လုပ်ပြီးမှ AI TIMESTAMP FIX ကို သုံးနိုင်ပါမည်', 'err');
+        return;
+    }
+    if (!selectedMediaFile) {
+        logTranscribe('ERROR: မူရင်း media ဖိုင် ရှာမတွေ့ပါ — ဖိုင်ကို ထပ်မံ upload လုပ်ပါ', 'err');
+        return;
+    }
+    if (getKeys().length === 0) {
+        logTranscribe('ERROR: Gemini API key မရှိပါ — "Text to Speech" tab ရဲ့ Key & Model Rotation panel တွင် key ထည့်ပါ', 'err');
+        return;
+    }
+    if (isTranscribing) return;
+    isTranscribing = true;
+    transcribeAborted = false;
+
+    const maxRetries = Math.max(parseInt(transcribeMaxRetriesInput.value, 10) || 2, 1);
+    const timeoutSec = Math.max(parseInt(transcribeTimeoutSecInput.value, 10) || 120, 30);
+
+    fixTimestampsBtn.disabled = true;
+    fixTimestampsBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> FIXING...';
+    transcribeStatusBadge.textContent = 'FIXING TIMESTAMPS';
+    logTranscribe('AI TIMESTAMP FIX (Gemini) စတင်နေသည် — media ကို တိုက်ရိုက် ခွဲခြမ်းစိတ်ဖြာနေသည်...');
+
+    try {
+        const fixedSrt = await callGeminiFixTimestamps(selectedMediaFile, currentTranscribeResult.srt, maxRetries, timeoutSec, (msg, lvl) => logTranscribe(msg, lvl));
+        currentTranscribeResult.srt = fixedSrt;
+        renderTranscribeOutput();
+        transcribeStatusBadge.textContent = 'DONE';
+        logTranscribe('Timestamp ပြင်ဆင်မှု ပြီးဆုံးပါပြီ ✓', 'ok');
+    } catch (err) {
+        console.error('Timestamp Fix Error:', err);
+        transcribeStatusBadge.textContent = 'FAILED';
+        logTranscribe(`FAILED: ${err.message}`, 'err');
+    } finally {
+        isTranscribing = false;
+        fixTimestampsBtn.disabled = false;
+        fixTimestampsBtn.innerHTML = '<i class="fa-solid fa-wand-magic-sparkles"></i> AI TIMESTAMP FIX';
+    }
+}
+
+fixTimestampsBtn.addEventListener('click', handleFixTimestamps);
 
 // =============================================================
 // Transcribe module init
