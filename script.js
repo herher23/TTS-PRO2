@@ -937,6 +937,7 @@ const transLogBox = document.getElementById('transLogBox');
 const outputDoneBadge = document.getElementById('outputDoneBadge');
 const copySrtBtn = document.getElementById('copySrtBtn');
 const downloadSrtBtn = document.getElementById('downloadSrtBtn');
+const srtOutputFilenameInput = document.getElementById('srtOutputFilename');
 const srtOutput = document.getElementById('srtOutput');
 const srtOutputMeta = document.getElementById('srtOutputMeta');
 const sendToTtsBtn = document.getElementById('sendToTtsBtn');
@@ -955,6 +956,7 @@ const DEFAULT_TRANS_MODELS = [
 let translationAborted = false;
 let activeTransControllers = [];
 let lastTranslatedSubs = null;
+let lastSrtSourceFileName = null;
 
 // =============================================================
 // Tool Tab Switching
@@ -1368,6 +1370,7 @@ chunkSizeInput.addEventListener('input', updateSrtInputMeta);
 srtFileInput.addEventListener('change', (e) => {
     const file = e.target.files[0];
     if (!file) return;
+    lastSrtSourceFileName = file.name.replace(/\.[^./]+$/, '');
     const reader = new FileReader();
     reader.onload = (evt) => {
         srtInput.value = evt.target.result;
@@ -1382,6 +1385,8 @@ clearSrtBtn.addEventListener('click', () => {
     srtOutputMeta.textContent = '';
     outputDoneBadge.classList.add('hidden');
     lastTranslatedSubs = null;
+    lastSrtSourceFileName = null;
+    srtOutputFilenameInput.value = '';
     updateSrtInputMeta();
 });
 
@@ -1447,6 +1452,9 @@ async function handleTranslateSrt() {
         const outputSrt = rebuildSrt(translatedSubs);
         srtOutput.value = outputSrt;
         srtOutputMeta.textContent = `Subtitles: ${translatedSubs.length} | Characters: ${outputSrt.length}`;
+        if (!srtOutputFilenameInput.value.trim()) {
+            srtOutputFilenameInput.value = lastSrtSourceFileName ? `${lastSrtSourceFileName}_${targetLang}` : `translated_${targetLang}_${Date.now()}`;
+        }
         outputDoneBadge.classList.remove('hidden');
         logTrans('ဘာသာပြန်ခြင်း အားလုံးပြီးဆုံးပါပြီ ✓', 'ok');
 
@@ -1485,13 +1493,19 @@ copySrtBtn.addEventListener('click', async () => {
     }
 });
 
+function sanitizeSrtFileName(name) {
+    return (name || '').trim().replace(/[\\/:*?"<>|]/g, '_').replace(/\.srt$/i, '').slice(0, 150);
+}
+
 downloadSrtBtn.addEventListener('click', () => {
     if (!srtOutput.value) return;
+    const typed = sanitizeSrtFileName(srtOutputFilenameInput.value);
+    const filename = `${typed || `translated_${Date.now()}`}.srt`;
     const blob = new Blob([srtOutput.value], { type: 'text/plain;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `translated_${Date.now()}.srt`;
+    a.download = filename;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
@@ -2122,6 +2136,9 @@ sendTranscribeToTranslatorBtn.addEventListener('click', () => {
         return;
     }
     srtInput.value = currentTranscribeResult.srt;
+    lastSrtSourceFileName = currentTranscribeResult.sourceFileName
+        ? currentTranscribeResult.sourceFileName.replace(/\.[^./]+$/, '')
+        : null;
     updateSrtInputMeta();
     switchToolView('translator');
     transProgressPanel.classList.remove('hidden');
