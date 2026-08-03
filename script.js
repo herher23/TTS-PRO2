@@ -1,5 +1,5 @@
 // =============================================================
-// NEO-YANGON 20236 TTS ENGINE — script.js
+// NEO-YANGON 2026 TTS ENGINE — script.js
 // Multi API Key rotation + Multi TTS Model rotation + Glossary
 // =============================================================
 
@@ -897,9 +897,11 @@ function renderVisualizer() {
 const tabTranslatorBtn = document.getElementById('tabTranslatorBtn');
 const tabTtsBtn = document.getElementById('tabTtsBtn');
 const tabTranscribeBtn = document.getElementById('tabTranscribeBtn');
+const tabRecapBtn = document.getElementById('tabRecapBtn');
 const ttsViewEl = document.getElementById('ttsView');
 const translatorViewEl = document.getElementById('translatorView');
 const transcribeViewEl = document.getElementById('transcribeView');
+const recapViewEl = document.getElementById('recapView');
 
 const toggleTransKeyPanelBtn = document.getElementById('toggleTransKeyPanelBtn');
 const transKeyPanelBody = document.getElementById('transKeyPanelBody');
@@ -960,14 +962,17 @@ let lastTranslatedSubs = null;
 function switchToolView(view) {
     const isTranslator = view === 'translator';
     const isTranscribe = view === 'transcribe';
-    const isTts = !isTranslator && !isTranscribe;
+    const isRecap = view === 'recap';
+    const isTts = !isTranslator && !isTranscribe && !isRecap;
 
     translatorViewEl.classList.toggle('hidden', !isTranslator);
     transcribeViewEl.classList.toggle('hidden', !isTranscribe);
+    recapViewEl.classList.toggle('hidden', !isRecap);
     ttsViewEl.classList.toggle('hidden', !isTts);
 
     tabTranslatorBtn.classList.toggle('tab-active', isTranslator);
     tabTranscribeBtn.classList.toggle('tab-active', isTranscribe);
+    tabRecapBtn.classList.toggle('tab-active', isRecap);
     tabTtsBtn.classList.toggle('tab-active', isTts);
 
     localStorage.setItem(LS_ACTIVE_TAB, view);
@@ -976,6 +981,7 @@ function switchToolView(view) {
 tabTranslatorBtn.addEventListener('click', () => switchToolView('translator'));
 tabTtsBtn.addEventListener('click', () => switchToolView('tts'));
 tabTranscribeBtn.addEventListener('click', () => switchToolView('transcribe'));
+tabRecapBtn.addEventListener('click', () => switchToolView('recap'));
 
 toggleTransKeyPanelBtn.addEventListener('click', () => {
     transKeyPanelBody.classList.toggle('hidden');
@@ -2034,4 +2040,540 @@ sendTranscribeToTranslatorBtn.addEventListener('click', () => {
 window.addEventListener('DOMContentLoaded', () => {
     loadTranscribeKeysIntoInputs();
     setActiveFormatBtn('srt');
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════════════════
+//  AI RECAP STUDIO MODULE — appended module, does not modify any code above this line
+//  (aside from the shared switchToolView()/tab wiring near the top of the file).
+//  One Click: Upload → Transcribe (reuses Transcribe tab's Gladia/Groq key pool) → Gemini
+//  (reuses TTS tab's Gemini key pool, own model list) → Clean Transcript + Myanmar
+//  Translation + Recap (Summary/Key Points/Chapters) + Titles, in a single structured call.
+//  Fully client-side — no backend, no FFmpeg, no video merge (see scope note in the UI).
+// =============================================================================================
+
+// ---- DOM Element Cache (Recap Studio view) ----
+const toggleRecapKeyPanelBtn = document.getElementById('toggleRecapKeyPanelBtn');
+const recapKeyPanelBody = document.getElementById('recapKeyPanelBody');
+const recapModelsInput = document.getElementById('recapModelsInput');
+const saveRecapModelsBtn = document.getElementById('saveRecapModelsBtn');
+const recapSaveStatusMsg = document.getElementById('recapSaveStatusMsg');
+
+const recapFileInput = document.getElementById('recapFileInput');
+const recapFileDropzone = document.getElementById('recapFileDropzone');
+const recapFileMeta = document.getElementById('recapFileMeta');
+
+const recapLangSelect = document.getElementById('recapLangSelect');
+const recapMaxRetriesInput = document.getElementById('recapMaxRetries');
+const recapTimeoutSecInput = document.getElementById('recapTimeoutSec');
+const recapRewriteLevelSelect = document.getElementById('recapRewriteLevel');
+const clearRecapBtn = document.getElementById('clearRecapBtn');
+const generateRecapBtn = document.getElementById('generateRecapBtn');
+const stopRecapBtn = document.getElementById('stopRecapBtn');
+
+const recapProgressPanel = document.getElementById('recapProgressPanel');
+const recapStatusBadge = document.getElementById('recapStatusBadge');
+const recapLogBox = document.getElementById('recapLogBox');
+
+const recapDoneBadge = document.getElementById('recapDoneBadge');
+const recapFormatRecapBtn = document.getElementById('recapFormatRecapBtn');
+const recapFormatTitlesBtn = document.getElementById('recapFormatTitlesBtn');
+const recapFormatCleanBtn = document.getElementById('recapFormatCleanBtn');
+const recapFormatMmBtn = document.getElementById('recapFormatMmBtn');
+const copyRecapBtn = document.getElementById('copyRecapBtn');
+const downloadRecapBtn = document.getElementById('downloadRecapBtn');
+const recapOutput = document.getElementById('recapOutput');
+const recapOutputMeta = document.getElementById('recapOutputMeta');
+const sendRecapToTtsBtn = document.getElementById('sendRecapToTtsBtn');
+
+// ---- Recap-only state ----
+const LS_RECAP_MODELS = 'neoyangon_recap_models';
+const LS_RECAP_MODEL_IDX = 'neoyangon_recap_model_idx';
+
+const DEFAULT_RECAP_MODELS = [
+    "gemini-3.6-flash",
+    "gemini-3.5-flash"
+];
+
+let selectedRecapFile = null;
+let isRecapProcessing = false;
+let recapAborted = false;
+let activeRecapControllers = [];
+let currentRecapResult = null; // parsed Gemini object + sourceFileName
+let activeRecapFormat = 'recap';
+
+// =============================================================
+// Recap model list (own rotation pointer, shares Gemini keys)
+// =============================================================
+function getRecapModels() {
+    const stored = localStorage.getItem(LS_RECAP_MODELS);
+    if (stored === null) return DEFAULT_RECAP_MODELS.slice();
+    const list = parseListInput(stored);
+    return list.length ? list : DEFAULT_RECAP_MODELS.slice();
+}
+
+function loadRecapModelsIntoInput() {
+    const stored = localStorage.getItem(LS_RECAP_MODELS);
+    recapModelsInput.value = stored ? parseListInput(stored).join('\n') : DEFAULT_RECAP_MODELS.join('\n');
+}
+
+saveRecapModelsBtn.addEventListener('click', () => {
+    localStorage.setItem(LS_RECAP_MODELS, recapModelsInput.value.trim());
+    setIndex(LS_RECAP_MODEL_IDX, 0, getRecapModels().length);
+    recapSaveStatusMsg.textContent = 'သိမ်းပြီးပါပြီ ✓';
+    setTimeout(() => { recapSaveStatusMsg.textContent = ''; }, 2500);
+});
+
+toggleRecapKeyPanelBtn.addEventListener('click', () => {
+    recapKeyPanelBody.classList.toggle('hidden');
+    const icon = toggleRecapKeyPanelBtn.querySelector('i');
+    icon.classList.toggle('fa-chevron-down');
+    icon.classList.toggle('fa-chevron-up');
+});
+
+function nextRecapCredential() {
+    const keys = getKeys();
+    const models = getRecapModels();
+    if (keys.length === 0) throw new Error('API key မထည့်ရသေးပါ — "Text to Speech" tab ထဲက Key & Model Rotation panel တွင် Gemini API key အနည်းဆုံးတစ်ခု ထည့်ပါ။');
+    if (models.length === 0) throw new Error('Recap processing model list ဗလာဖြစ်နေပါသည်။');
+
+    const keyIdx = getIndex(LS_KEY_IDX, keys.length);
+    const modelIdx = getIndex(LS_RECAP_MODEL_IDX, models.length);
+
+    setIndex(LS_KEY_IDX, keyIdx + 1, keys.length);
+    if (keyIdx + 1 >= keys.length) {
+        setIndex(LS_RECAP_MODEL_IDX, modelIdx + 1, models.length);
+    }
+    updateBadges();
+
+    return { key: keys[keyIdx], model: models[modelIdx] };
+}
+
+function advanceRecapCredential() {
+    const keys = getKeys();
+    const models = getRecapModels();
+    if (keys.length === 0 || models.length === 0) return { key: keys[0], model: models[0] };
+    const keyIdx = getIndex(LS_KEY_IDX, keys.length);
+    setIndex(LS_KEY_IDX, keyIdx + 1, keys.length);
+    if (keyIdx + 1 >= keys.length) {
+        const modelIdx = getIndex(LS_RECAP_MODEL_IDX, models.length);
+        setIndex(LS_RECAP_MODEL_IDX, modelIdx + 1, models.length);
+    }
+    updateBadges();
+    return { key: keys[getIndex(LS_KEY_IDX, keys.length)], model: models[getIndex(LS_RECAP_MODEL_IDX, models.length)] };
+}
+
+// =============================================================
+// File selection (click, browse, and drag & drop)
+// =============================================================
+function setSelectedRecapFile(file) {
+    if (!file) return;
+    selectedRecapFile = file;
+    recapFileMeta.textContent = `${file.name} • ${formatBytes(file.size)}`;
+    recapFileDropzone.classList.add('border-emerald-500/50');
+
+    const objectUrl = URL.createObjectURL(file);
+    const probe = document.createElement(file.type.startsWith('video') ? 'video' : 'audio');
+    probe.preload = 'metadata';
+    probe.onloadedmetadata = () => {
+        recapFileMeta.textContent = `${file.name} • ${formatBytes(file.size)} • ${formatTime(probe.duration)}`;
+        URL.revokeObjectURL(objectUrl);
+    };
+    probe.onerror = () => URL.revokeObjectURL(objectUrl);
+    probe.src = objectUrl;
+}
+
+recapFileInput.addEventListener('change', () => setSelectedRecapFile(recapFileInput.files[0]));
+recapFileDropzone.addEventListener('click', () => recapFileInput.click());
+['dragenter', 'dragover'].forEach(evt => {
+    recapFileDropzone.addEventListener(evt, (e) => {
+        e.preventDefault();
+        recapFileDropzone.classList.add('border-cyan-300');
+    });
+});
+['dragleave', 'drop'].forEach(evt => {
+    recapFileDropzone.addEventListener(evt, (e) => {
+        e.preventDefault();
+        recapFileDropzone.classList.remove('border-cyan-300');
+    });
+});
+recapFileDropzone.addEventListener('drop', (e) => {
+    const file = e.dataTransfer.files && e.dataTransfer.files[0];
+    if (file) setSelectedRecapFile(file);
+});
+
+// =============================================================
+// Gemini structured JSON-object call: clean + translate + recap + titles
+// =============================================================
+function extractJsonObject(raw) {
+    let cleaned = raw.trim();
+    cleaned = cleaned.replace(/^```json\s*/i, '').replace(/^```\s*/, '').replace(/```\s*$/, '').trim();
+    try {
+        const parsed = JSON.parse(cleaned);
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed;
+    } catch (e) { /* fall through to regex extraction */ }
+
+    const match = cleaned.match(/\{[\s\S]*\}/);
+    if (match) {
+        try {
+            const parsed = JSON.parse(match[0]);
+            if (parsed && typeof parsed === 'object') return parsed;
+        } catch (e) { /* give up below */ }
+    }
+    throw new Error('JSON object parse failed');
+}
+
+function buildRecapPrompt(transcriptText, rewriteLevel) {
+    const rewriteInstructions = {
+        low: 'Keep close to the original meaning and structure; only lightly vary sentence phrasing and word choice where it still reads naturally.',
+        medium: 'Restructure sentences, vary vocabulary, and reorder points where it still reads naturally; aim for roughly 30%-40% wording similarity to a literal transcript-based summary while preserving every fact.',
+        high: 'Keep only the underlying facts and story beats; rewrite sentence structure, vocabulary, and ordering substantially in a natural human storytelling style; aim for the lowest wording similarity to the original transcript while preserving every fact.'
+    };
+    const rewriteNote = rewriteInstructions[rewriteLevel] || rewriteInstructions.medium;
+
+    return `You are a senior Myanmar-language video content editor and AI recap producer. You are given a raw speech-to-text transcript of an uploaded video/audio. Perform ALL of the following tasks and return ONLY one JSON object (no markdown, no backticks, no explanation) matching exactly this shape:
+
+{
+  "cleanTranscript": string,
+  "myanmarTranslation": string,
+  "shortSummary": string,
+  "longSummary": string,
+  "keyPoints": string[],
+  "importantMoments": string[],
+  "chapters": [{"title": string, "description": string}],
+  "youtubeTitle": string,
+  "tiktokTitle": string,
+  "facebookTitle": string,
+  "seoKeywords": string[]
+}
+
+Task 1 — cleanTranscript: Fix punctuation and casing, remove filler/noise words (um, uh, repeated words), improve readability, but keep the original language and the original meaning exactly — do not summarize or shorten it.
+
+Task 2 — myanmarTranslation: Translate the cleaned transcript into natural, professional, narration-quality Myanmar (Burmese). Translate for meaning and context, never word-for-word. Preserve names, numbers, and facts exactly. Use normal Myanmar sentence punctuation (this is narration prose, not subtitle lines).
+
+Task 3 — AI Recap (write these in natural Myanmar, since they will be used for a Myanmar-narrated recap video):
+- shortSummary: a tight 2-3 sentence hook summary.
+- longSummary: a flowing, well-structured narration-ready paragraph (or a few short paragraphs) covering the full story/content, suitable to be read aloud as recap narration.
+- keyPoints: 5-8 concise bullet-style key points.
+- importantMoments: 3-6 standout highlights/moments worth emphasizing.
+- chapters: an ordered story-flow / chapter breakdown, each item a short {title, description} pair covering one stage of the content.
+
+Task 4 — Title Generator (write in natural, catchy Myanmar unless the source content is clearly in English, in which case you may mix in English where it helps SEO):
+- youtubeTitle, tiktokTitle, facebookTitle: platform-appropriate catchy titles for this recap video.
+- seoKeywords: 6-10 relevant search keywords/hashtags (Myanmar and/or English, whichever fits the topic best).
+
+Task 5 — Copyright-safe rewriting: Apply this ONLY to shortSummary, longSummary, keyPoints, importantMoments, chapters, and the three titles (never to cleanTranscript or myanmarTranslation, which must stay faithful). Rewrite level = ${rewriteLevel.toUpperCase()}. ${rewriteNote} Never invent facts that are not in the transcript.
+
+Return ONLY the JSON object described above — valid JSON, no trailing commas, no comments.
+
+--- RAW TRANSCRIPT START ---
+${transcriptText}
+--- RAW TRANSCRIPT END ---`;
+}
+
+async function callRecapGemini(transcriptText, rewriteLevel, maxRetries, timeoutSec) {
+    let cred = nextRecapCredential();
+    let lastErr;
+
+    const responseSchema = {
+        type: "OBJECT",
+        properties: {
+            cleanTranscript: { type: "STRING" },
+            myanmarTranslation: { type: "STRING" },
+            shortSummary: { type: "STRING" },
+            longSummary: { type: "STRING" },
+            keyPoints: { type: "ARRAY", items: { type: "STRING" } },
+            importantMoments: { type: "ARRAY", items: { type: "STRING" } },
+            chapters: {
+                type: "ARRAY",
+                items: {
+                    type: "OBJECT",
+                    properties: { title: { type: "STRING" }, description: { type: "STRING" } },
+                    required: ["title", "description"]
+                }
+            },
+            youtubeTitle: { type: "STRING" },
+            tiktokTitle: { type: "STRING" },
+            facebookTitle: { type: "STRING" },
+            seoKeywords: { type: "ARRAY", items: { type: "STRING" } }
+        },
+        required: ["cleanTranscript", "myanmarTranslation", "shortSummary", "longSummary", "keyPoints", "importantMoments", "chapters", "youtubeTitle", "tiktokTitle", "facebookTitle", "seoKeywords"]
+    };
+
+    for (let attempt = 0; attempt < Math.max(maxRetries, 1); attempt++) {
+        if (recapAborted) throw new Error('Stopped by user');
+
+        const controller = new AbortController();
+        activeRecapControllers.push(controller);
+        const timer = setTimeout(() => controller.abort(), Math.max(timeoutSec, 1) * 1000);
+
+        try {
+            const prompt = buildRecapPrompt(transcriptText, rewriteLevel);
+            const payload = {
+                contents: [{ parts: [{ text: prompt }] }],
+                generationConfig: {
+                    responseMimeType: "application/json",
+                    responseSchema
+                }
+            };
+            const apiUrl = `https://vpn-my-proxy.speedify730.workers.dev/?https://generativelanguage.googleapis.com/v1beta/models/${cred.model}:generateContent?key=${cred.key}`;
+
+            const response = await fetch(apiUrl, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload),
+                signal: controller.signal
+            });
+            clearTimeout(timer);
+
+            if (!response.ok) {
+                if ([400, 401, 403, 404, 429].includes(response.status)) {
+                    logRecap(`HTTP ${response.status} — key/model rotating...`, 'warn');
+                    cred = advanceRecapCredential();
+                    lastErr = new Error(`HTTP ${response.status}`);
+                    continue;
+                }
+                throw new Error(`HTTP ${response.status}`);
+            }
+
+            const data = await response.json();
+            const raw = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+            if (!raw) throw new Error('Empty response from model');
+
+            const obj = extractJsonObject(raw);
+            if (!obj.cleanTranscript || !obj.myanmarTranslation) {
+                throw new Error('Incomplete response from model');
+            }
+            return obj;
+
+        } catch (e) {
+            clearTimeout(timer);
+            if (e.name === 'AbortError') {
+                lastErr = new Error('Timeout');
+                logRecap(`Timeout (${timeoutSec}s) — retrying...`, 'warn');
+            } else {
+                lastErr = e;
+            }
+            cred = advanceRecapCredential();
+        } finally {
+            activeRecapControllers = activeRecapControllers.filter(c => c !== controller);
+        }
+    }
+
+    throw lastErr || new Error('All retries failed');
+}
+
+// Applies the Global Memory / Glossary find/replace pass to every Myanmar-language field
+function applyGlossaryToRecapResult(obj) {
+    const g = (s) => applyGlossary(String(s || ''));
+    return {
+        ...obj,
+        myanmarTranslation: g(obj.myanmarTranslation),
+        shortSummary: g(obj.shortSummary),
+        longSummary: g(obj.longSummary),
+        keyPoints: (obj.keyPoints || []).map(g),
+        importantMoments: (obj.importantMoments || []).map(g),
+        chapters: (obj.chapters || []).map(c => ({ title: g(c.title), description: g(c.description) })),
+        youtubeTitle: g(obj.youtubeTitle),
+        tiktokTitle: g(obj.tiktokTitle),
+        facebookTitle: g(obj.facebookTitle),
+        seoKeywords: (obj.seoKeywords || []).map(g)
+    };
+}
+
+// =============================================================
+// Progress / Log helpers
+// =============================================================
+function logRecap(msg, level) {
+    const line = document.createElement('div');
+    line.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
+    line.className = level === 'ok' ? 'log-entry-ok' : level === 'warn' ? 'log-entry-warn' : level === 'err' ? 'log-entry-err' : '';
+    recapLogBox.appendChild(line);
+    recapLogBox.scrollTop = recapLogBox.scrollHeight;
+}
+
+// =============================================================
+// Main "ONE CLICK GENERATE" handler
+// =============================================================
+async function handleGenerateRecap() {
+    if (!selectedRecapFile) {
+        logRecap('ERROR: မီဒီယာဖိုင် ရွေးရန်လိုအပ်ပါသည်', 'err');
+        return;
+    }
+    if (getTranscribeCredentialPool().length === 0) {
+        logRecap('ERROR: Gladia/Groq API key မရှိပါ — "မီဒီယာ → SRT" tab ရဲ့ Key Pool panel တွင် key ထည့်ပါ', 'err');
+        return;
+    }
+    if (getKeys().length === 0) {
+        logRecap('ERROR: Gemini API key မရှိပါ — "Text to Speech" tab ရဲ့ Key panel တွင် key ထည့်ပါ', 'err');
+        return;
+    }
+    if (isRecapProcessing) return;
+    isRecapProcessing = true;
+    recapAborted = false;
+    transcribeAborted = false; // shared flag used by the reused transcription pipeline below
+
+    const language = recapLangSelect.value;
+    const maxRetries = Math.max(parseInt(recapMaxRetriesInput.value, 10) || 2, 1);
+    const timeoutSec = Math.max(parseInt(recapTimeoutSecInput.value, 10) || 120, 10);
+    const rewriteLevel = recapRewriteLevelSelect.value;
+
+    generateRecapBtn.disabled = true;
+    generateRecapBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin mr-2"></i><span>PROCESSING...</span>';
+    stopRecapBtn.disabled = false;
+    recapDoneBadge.classList.add('hidden');
+    recapProgressPanel.classList.remove('hidden');
+    recapLogBox.innerHTML = '';
+    recapOutput.value = '';
+    recapStatusBadge.textContent = 'TRANSCRIBING';
+
+    logRecap(`ဖိုင် "${selectedRecapFile.name}" (${formatBytes(selectedRecapFile.size)}) — ONE CLICK စတင်နေသည်...`);
+
+    try {
+        // Step 1 — Transcribe (reuses the Transcribe tab's Gladia/Groq key pool + rotation)
+        const transcript = await transcribeMediaWithRotation(selectedRecapFile, language, maxRetries, timeoutSec, (msg, lvl) => logRecap(msg, lvl));
+        if (recapAborted || transcribeAborted) throw new Error('Stopped by user');
+        if (!transcript.fullText || !transcript.fullText.trim()) throw new Error('Transcript ဗလာဖြစ်နေပါသည် — ဖိုင်ကို ပြန်စစ်ပါ');
+        logRecap(`Transcription ပြီးဆုံးပါပြီ ✓ (${transcript.provider.toUpperCase()}, ${transcript.fullText.length} characters)`, 'ok');
+
+        // Step 2 — Gemini: clean + translate + recap + titles (single structured call)
+        recapStatusBadge.textContent = 'AI PROCESSING';
+        logRecap('Gemini ဖြင့် Clean / မြန်မာဘာသာပြန် / Recap / Title Generation စတင်နေသည်...');
+        let result = await callRecapGemini(transcript.fullText, rewriteLevel, maxRetries, timeoutSec);
+        result = applyGlossaryToRecapResult(result);
+
+        currentRecapResult = { ...result, sourceFileName: selectedRecapFile.name };
+        renderRecapOutput();
+        recapOutputMeta.textContent = `Source: ${transcript.provider.toUpperCase()} | Chapters: ${(result.chapters || []).length} | Key Points: ${(result.keyPoints || []).length}`;
+        recapDoneBadge.classList.remove('hidden');
+        recapStatusBadge.textContent = 'DONE';
+        logRecap('AI Recap Studio — ONE CLICK ပြီးဆုံးပါပြီ ✓', 'ok');
+
+    } catch (err) {
+        console.error('Recap Studio Error:', err);
+        recapStatusBadge.textContent = 'FAILED';
+        logRecap(`FAILED: ${err.message}`, 'err');
+    } finally {
+        isRecapProcessing = false;
+        generateRecapBtn.disabled = false;
+        generateRecapBtn.innerHTML = '<i class="fa-solid fa-wand-magic-sparkles text-yellow-300 text-base"></i><span>ONE CLICK GENERATE</span>';
+        stopRecapBtn.disabled = true;
+    }
+}
+
+function handleStopRecap() {
+    recapAborted = true;
+    transcribeAborted = true; // also stop the shared transcription pipeline if mid-flight
+    activeTranscribeAbortControllers.forEach(c => { try { c.abort(); } catch (e) {} });
+    activeTranscribeAbortControllers = [];
+    activeRecapControllers.forEach(c => { try { c.abort(); } catch (e) {} });
+    activeRecapControllers = [];
+    logRecap('ရပ်တန့်ရန် တောင်းဆိုလိုက်ပါသည်...', 'warn');
+    stopRecapBtn.disabled = true;
+}
+
+clearRecapBtn.addEventListener('click', () => {
+    selectedRecapFile = null;
+    recapFileInput.value = '';
+    recapFileMeta.textContent = 'ဖိုင်ရွေးရန် (.mp4 / .mp3 / .wav / .m4a) — ဒီနေရာသို့ drag & drop လည်းရပါသည်';
+    recapFileDropzone.classList.remove('border-emerald-500/50');
+    currentRecapResult = null;
+    recapOutput.value = '';
+    recapOutputMeta.textContent = '';
+    recapDoneBadge.classList.add('hidden');
+    recapLogBox.innerHTML = '';
+    recapProgressPanel.classList.add('hidden');
+    recapStatusBadge.textContent = 'IDLE';
+});
+
+generateRecapBtn.addEventListener('click', handleGenerateRecap);
+stopRecapBtn.addEventListener('click', handleStopRecap);
+
+// =============================================================
+// Output format switcher (RECAP / TITLES / CLEAN TXT / MM) + Copy / Download
+// =============================================================
+function setActiveRecapFormatBtn(fmt) {
+    [recapFormatRecapBtn, recapFormatTitlesBtn, recapFormatCleanBtn, recapFormatMmBtn].forEach(btn => {
+        btn.className = "px-2 py-1 rounded bg-black/60 text-cyan-400 border border-cyan-500/30";
+    });
+    const map = { recap: recapFormatRecapBtn, titles: recapFormatTitlesBtn, clean: recapFormatCleanBtn, mm: recapFormatMmBtn };
+    map[fmt].className = "px-2 py-1 rounded bg-cyan-500 text-black font-bold";
+}
+
+function renderRecapOutput() {
+    if (!currentRecapResult) { recapOutput.value = ''; return; }
+    const r = currentRecapResult;
+
+    if (activeRecapFormat === 'recap') {
+        const keyPoints = (r.keyPoints || []).map(p => `- ${p}`).join('\n');
+        const moments = (r.importantMoments || []).map(p => `- ${p}`).join('\n');
+        const chapters = (r.chapters || []).map((c, i) => `${i + 1}. ${c.title} — ${c.description}`).join('\n');
+        recapOutput.value = `◆ SHORT SUMMARY\n${r.shortSummary || ''}\n\n◆ LONG SUMMARY (Narration Ready)\n${r.longSummary || ''}\n\n◆ KEY POINTS\n${keyPoints}\n\n◆ IMPORTANT MOMENTS\n${moments}\n\n◆ CHAPTER / STORY FLOW BREAKDOWN\n${chapters}`;
+    } else if (activeRecapFormat === 'titles') {
+        const keywords = (r.seoKeywords || []).join(', ');
+        recapOutput.value = `YOUTUBE TITLE:\n${r.youtubeTitle || ''}\n\nTIKTOK TITLE:\n${r.tiktokTitle || ''}\n\nFACEBOOK TITLE:\n${r.facebookTitle || ''}\n\nSEO KEYWORDS:\n${keywords}`;
+    } else if (activeRecapFormat === 'clean') {
+        recapOutput.value = r.cleanTranscript || '';
+    } else {
+        recapOutput.value = r.myanmarTranslation || '';
+    }
+}
+
+recapFormatRecapBtn.addEventListener('click', () => { activeRecapFormat = 'recap'; setActiveRecapFormatBtn('recap'); renderRecapOutput(); });
+recapFormatTitlesBtn.addEventListener('click', () => { activeRecapFormat = 'titles'; setActiveRecapFormatBtn('titles'); renderRecapOutput(); });
+recapFormatCleanBtn.addEventListener('click', () => { activeRecapFormat = 'clean'; setActiveRecapFormatBtn('clean'); renderRecapOutput(); });
+recapFormatMmBtn.addEventListener('click', () => { activeRecapFormat = 'mm'; setActiveRecapFormatBtn('mm'); renderRecapOutput(); });
+
+copyRecapBtn.addEventListener('click', async () => {
+    if (!recapOutput.value) return;
+    try {
+        await navigator.clipboard.writeText(recapOutput.value);
+        const original = copyRecapBtn.innerHTML;
+        copyRecapBtn.innerHTML = '<i class="fa-solid fa-check mr-1"></i> Copied';
+        setTimeout(() => { copyRecapBtn.innerHTML = original; }, 1800);
+    } catch (e) {
+        recapOutput.select();
+        document.execCommand('copy');
+    }
+});
+
+downloadRecapBtn.addEventListener('click', () => {
+    if (!recapOutput.value) return;
+    const baseName = (currentRecapResult && currentRecapResult.sourceFileName)
+        ? currentRecapResult.sourceFileName.replace(/\.[^./]+$/, '')
+        : `recap_${Date.now()}`;
+    const suffix = activeRecapFormat === 'recap' ? '_recap' : activeRecapFormat === 'titles' ? '_titles' : activeRecapFormat === 'clean' ? '_clean' : '_myanmar';
+    const filename = `${baseName}${suffix}.txt`;
+
+    const blob = new Blob([recapOutput.value], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+});
+
+// =============================================================
+// Send the Myanmar recap narration (long summary) straight to the TTS tab
+// =============================================================
+sendRecapToTtsBtn.addEventListener('click', () => {
+    if (!currentRecapResult || !currentRecapResult.longSummary) {
+        logRecap('ပထမဆုံး ONE CLICK GENERATE လုပ်ပြီးမှ TTS ကို ပို့နိုင်ပါမည်', 'warn');
+        return;
+    }
+    const narration = currentRecapResult.longSummary.slice(0, 10000);
+    textInput.value = narration;
+    charCount.textContent = narration.length;
+    switchToolView('tts');
+    setStatus('AI RECAP STUDIO မှ Narration စာသား လက်ခံရရှိပါပြီ', 'text-emerald-400');
+});
+
+// =============================================================
+// Recap Studio module init
+// =============================================================
+window.addEventListener('DOMContentLoaded', () => {
+    loadRecapModelsIntoInput();
+    setActiveRecapFormatBtn('recap');
 });
