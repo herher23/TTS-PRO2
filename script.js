@@ -1570,6 +1570,7 @@ const outFormatSrtBtn = document.getElementById('outFormatSrtBtn');
 const outFormatTxtBtn = document.getElementById('outFormatTxtBtn');
 const outFormatJsonBtn = document.getElementById('outFormatJsonBtn');
 const fixTimestampsBtn = document.getElementById('fixTimestampsBtn');
+const formatSrtBtn = document.getElementById('formatSrtBtn');
 const copyTranscribeBtn = document.getElementById('copyTranscribeBtn');
 const downloadTranscribeBtn = document.getElementById('downloadTranscribeBtn');
 const transcribeOutput = document.getElementById('transcribeOutput');
@@ -2317,6 +2318,146 @@ async function handleFixTimestamps() {
 }
 
 fixTimestampsBtn.addEventListener('click', handleFixTimestamps);
+
+// =============================================================
+// AI SRT FORMAT — Gemini text-only cleanup pass
+// Takes the current (often fragment/word-level) SRT and re-organizes it into
+// natural, CapCut/YouTube-style subtitles: merges over-split fragments,
+// drops silence padding, removes duplicate/overlapping lines, renumbers
+// sequentially. Text-only — no media file needed, reuses the same Gemini
+// key pool + model list as AI TIMESTAMP FIX.
+// =============================================================
+const SRT_FORMAT_SYSTEM_PROMPT =
+`သင်သည် Professional Subtitle Editor ဖြစ်သည်။
+Input: Transcript သို့မဟုတ် SRT
+
+လုပ်ဆောင်ရန်:
+- CapCut နှင့် YouTube Original SRT ထုတ်သည့်ပုံစံအတိုင်း Subtitle ပြန်စီပါ။
+- Timestamp များကို အသံစတင်သည့်အချိန်မှ စ၍ အသံဆုံးသည့်အချိန်တွင် အဆုံးသတ်ပါ။
+- စကားမပြောသည့် (Silence) အချိန်များကို မထည့်ပါနှင့်။
+- စာသားထပ်ခြင်း၊ Timestamp ထပ်ခြင်းနှင့် Overlap များကို ဖယ်ရှားပါ။
+- စကားတစ်ခွန်းတည်းကို Subtitle အများကြီး မခွဲပါနှင့်။
+- လိုအပ်လျှင် သဘာဝကျသော စာကြောင်းတစ်ကြောင်း သို့မဟုတ် နှစ်ကြောင်းအဖြစ်သာ ခွဲပါ။
+- Subtitle နံပါတ်များကို အစဉ်လိုက် ပြန်စီပါ။
+- ဖတ်ရလွယ်ပြီး အသံနှင့် 100% ကိုက်ညီသော Original SRT ကိုသာ ထုတ်ပေးပါ။
+- Output သည် UTF-8 SRT သာ ဖြစ်ရမည်။`;
+
+function buildSrtFormatPrompt(inputText) {
+    return `${SRT_FORMAT_SYSTEM_PROMPT}
+
+အောက်ပါ Input (fragment/word-level SRT ဖြစ်နိုင်သည်) ကို အထက်ပါစည်းမျဉ်းများနှင့်အညီ ပြန်လည်စီစဉ်ပြင်ဆင်ပါ။ ပါရှိပြီးသား start/end timestamp များကို အခြေခံ၍ ဆက်စပ်နေသော fragment များကို တစ်ကြောင်းတည်းအဖြစ် ပေါင်းစည်းပါ (ပေါင်းစည်းထားသော segment ရဲ့ start ကို အုပ်စုအတွင်းရှိ အစောဆုံး start၊ end ကို အနောက်ဆုံး end အဖြစ်သုံးပါ)။ စာသားကို ဘာသာမပြန်ပါနှင့်၊ မူရင်းစာသားကိုသာ သုံးပါ။
+
+--- INPUT START ---
+${inputText}
+--- INPUT END ---`;
+}
+
+async function callGeminiFormatSrt(inputText, maxRetries, timeoutSec, onLog) {
+    let cred = nextTimefixCredential();
+    let lastErr;
+
+    const responseSchema = { type: "OBJECT", properties: { srt: { type: "STRING" } }, required: ["srt"] };
+
+    for (let attempt = 0; attempt < Math.max(maxRetries, 1); attempt++) {
+        if (transcribeAborted) throw new Error('Stopped by user');
+        const controller = new AbortController();
+        activeTranscribeAbortControllers.push(controller);
+        const timer = setTimeout(() => controller.abort(), Math.max(timeoutSec, 30) * 1000);
+
+        try {
+            if (onLog) onLog(`[SRT-FORMAT] ${cred.model} ဖြင့် ပြန်စီနေသည် (attempt ${attempt + 1}/${Math.max(maxRetries, 1)})...`);
+
+            const payload = {
+                contents: [{ parts: [{ text: buildSrtFormatPrompt(inputText) }] }],
+                generationConfig: { responseMimeType: "application/json", responseSchema }
+            };
+            const apiUrl = `https://vpn-my-proxy.speedify730.workers.dev/?https://generativelanguage.googleapis.com/v1beta/models/${cred.model}:generateContent?key=${cred.key}`;
+
+            const response = await fetch(apiUrl, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload),
+                signal: controller.signal
+            });
+            clearTimeout(timer);
+
+            if (!response.ok) {
+                if ([400, 401, 403, 404, 413, 429].includes(response.status)) {
+                    if (onLog) onLog(`HTTP ${response.status} — key/model rotating...`, 'warn');
+                    const next = advanceTimefixCredential();
+                    lastErr = new Error(`HTTP ${response.status}`);
+                    if (!next) break;
+                    cred = next;
+                    continue;
+                }
+                throw new Error(`HTTP ${response.status}`);
+            }
+
+            const data = await response.json();
+            const raw = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+            if (!raw) throw new Error('Empty response from model');
+
+            const obj = extractJsonObject(raw);
+            if (!obj.srt || !obj.srt.trim()) throw new Error('Incomplete response from model');
+            return obj.srt.trim() + '\n';
+
+        } catch (e) {
+            clearTimeout(timer);
+            if (e.name === 'AbortError') {
+                lastErr = new Error('Timeout');
+                if (onLog) onLog(`Timeout (${timeoutSec}s) — retrying...`, 'warn');
+            } else {
+                lastErr = e;
+            }
+            const next = advanceTimefixCredential();
+            if (!next) break;
+            cred = next;
+        } finally {
+            activeTranscribeAbortControllers = activeTranscribeAbortControllers.filter(c => c !== controller);
+        }
+    }
+    throw lastErr || new Error('AI SRT Format — retries အားလုံး failed ဖြစ်သွားပါသည်');
+}
+
+async function handleFormatSrt() {
+    if (!currentTranscribeResult || !currentTranscribeResult.srt) {
+        logTranscribe('ERROR: ပထမဆုံး TRANSCRIBE လုပ်ပြီးမှ AI SRT FORMAT ကို သုံးနိုင်ပါမည်', 'err');
+        return;
+    }
+    if (getKeys().length === 0) {
+        logTranscribe('ERROR: Gemini API key မရှိပါ — "Text to Speech" tab ရဲ့ Key & Model Rotation panel တွင် key ထည့်ပါ', 'err');
+        return;
+    }
+    if (isTranscribing) return;
+    isTranscribing = true;
+    transcribeAborted = false;
+
+    const maxRetries = Math.max(parseInt(transcribeMaxRetriesInput.value, 10) || 2, 1);
+    const timeoutSec = Math.max(parseInt(transcribeTimeoutSecInput.value, 10) || 120, 30);
+
+    formatSrtBtn.disabled = true;
+    formatSrtBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> FORMATTING...';
+    transcribeStatusBadge.textContent = 'FORMATTING SRT';
+    logTranscribe('AI SRT FORMAT (Gemini) စတင်နေသည် — fragment/duplicate/overlap များ ရှာဖွေနေသည်...');
+
+    try {
+        const formattedSrt = await callGeminiFormatSrt(currentTranscribeResult.srt, maxRetries, timeoutSec, (msg, lvl) => logTranscribe(msg, lvl));
+        currentTranscribeResult.srt = formattedSrt;
+        renderTranscribeOutput();
+        transcribeStatusBadge.textContent = 'DONE';
+        logTranscribe('SRT ပြန်စီခြင်း ပြီးဆုံးပါပြီ ✓', 'ok');
+    } catch (err) {
+        console.error('SRT Format Error:', err);
+        transcribeStatusBadge.textContent = 'FAILED';
+        logTranscribe(`FAILED: ${err.message}`, 'err');
+    } finally {
+        isTranscribing = false;
+        formatSrtBtn.disabled = false;
+        formatSrtBtn.innerHTML = '<i class="fa-solid fa-list-check"></i> AI SRT FORMAT';
+    }
+}
+
+formatSrtBtn.addEventListener('click', handleFormatSrt);
 
 // =============================================================
 // Transcribe module init

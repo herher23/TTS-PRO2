@@ -771,6 +771,9 @@
                 </div>
 
                 <div class="flex justify-end gap-2 mb-3 flex-wrap">
+                    <button id="formatSrtBtn" class="px-3 py-1.5 rounded-lg bg-gradient-to-r from-emerald-600 to-cyan-600 hover:from-emerald-500 hover:to-cyan-500 text-white font-mono text-xs font-bold transition-all flex items-center gap-1" title="Gemini ဖြင့် fragment/duplicate/overlap များ ဖယ်ရှားပြီး သဘာဝကျသော SRT ပြန်စီပါမည်">
+                        <i class="fa-solid fa-list-check"></i> AI SRT FORMAT
+                    </button>
                     <button id="fixTimestampsBtn" class="px-3 py-1.5 rounded-lg bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-500 hover:to-pink-500 text-white font-mono text-xs font-bold transition-all flex items-center gap-1" title="Gemini ဖြင့် media ကို တိုက်ရိုက်ခွဲခြမ်းပြီး Timestamp ကို ပြန်ချိန်ညှိပါမည်">
                         <i class="fa-solid fa-wand-magic-sparkles"></i> AI TIMESTAMP FIX
                     </button>
@@ -784,12 +787,13 @@
 
                 <p class="font-mono text-[10px] text-purple-400/70 mb-3 -mt-2">
                     <i class="fa-solid fa-circle-info mr-1"></i>
-                    AI TIMESTAMP FIX သည် "Text to Speech" tab ရဲ့ Gemini Key &amp; Model Rotation panel ထဲက key ကိုသုံးပြီး၊ မူရင်း media ဖိုင်ကို တိုက်ရိုက်နားထောင်/ကြည့်ကာ SRT timestamp များကို ပြန်ချိန်ညှိပေးပါမည် (စာသားအကြောင်းအရာကို မပြောင်းလဲပါ)။
+                    AI SRT FORMAT — fragment/duplicate/overlap များကို ဖယ်ရှားပြီး CapCut/YouTube စတိုင် သဘာဝကျသော စာကြောင်းများအဖြစ် ပြန်စီပါမည် (text-only, media ဖိုင်မလို)။ AI TIMESTAMP FIX — "Text to Speech" tab ရဲ့ Gemini key ကိုသုံးပြီး မူရင်း media ဖိုင်ကို တိုက်ရိုက်နားထောင်/ကြည့်ကာ timestamp ကို ပြန်ချိန်ညှိပါမည်။ နှစ်ခုစလုံးသည် subtitle စာသားအကြောင်းအရာကို မပြောင်းလဲပါ။
                 </p>
 
                 <textarea id="transcribeOutput" readonly
                     class="w-full flex-grow min-h-[320px] p-4 rounded-lg bg-black/60 border border-cyan-500/30 text-cyan-100 placeholder-cyan-700/60 font-mono text-xs leading-relaxed focus:outline-none resize-y"
                     placeholder="Transcribe လုပ်ပြီးသော SRT / Transcript / JSON ဤနေရာတွင် ထွက်ပေါ်လာမည်..."></textarea>
+
 
                 <div id="transcribeOutputMeta" class="mt-2 font-mono text-[10px] text-cyan-500/60"></div>
 
