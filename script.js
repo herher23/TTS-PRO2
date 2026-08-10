@@ -601,7 +601,7 @@ async function synthesizeChunk(textChunk, voice) {
             }
         };
 
-        const apiUrl = `https://vpn-my-proxy.speedify730.workers.dev/?https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`;
+        const apiUrl = `https://vpn2-pro.herher650.workers.dev/?https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`;
 
         try {
             const response = await fetch(apiUrl, {
@@ -1211,7 +1211,7 @@ async function translateChunkWithRetry(chunk, targetLang, maxRetries, timeoutSec
                     responseSchema: { type: "ARRAY", items: { type: "STRING" } }
                 }
             };
-            const apiUrl = `https://vpn-my-proxy.speedify730.workers.dev/?https://generativelanguage.googleapis.com/v1beta/models/${cred.model}:generateContent?key=${cred.key}`;
+            const apiUrl = `https://vpn2-pro.herher650.workers.dev/?https://generativelanguage.googleapis.com/v1beta/models/${cred.model}:generateContent?key=${cred.key}`;
 
             const response = await fetch(apiUrl, {
                 method: 'POST',
@@ -2395,7 +2395,7 @@ async function callGeminiFixTimestamps(mediaFile, existingSrt, maxRetries, timeo
                 }],
                 generationConfig: { responseMimeType: "application/json", responseSchema }
             };
-            const apiUrl = `https://vpn-my-proxy.speedify730.workers.dev/?https://generativelanguage.googleapis.com/v1beta/models/${cred.model}:generateContent?key=${cred.key}`;
+            const apiUrl = `https://vpn2-pro.herher650.workers.dev/?https://generativelanguage.googleapis.com/v1beta/models/${cred.model}:generateContent?key=${cred.key}`;
 
             const response = await fetch(apiUrl, {
                 method: 'POST',
@@ -2539,7 +2539,7 @@ async function callGeminiFormatSrt(inputText, maxRetries, timeoutSec, onLog) {
                 contents: [{ parts: [{ text: buildSrtFormatPrompt(inputText) }] }],
                 generationConfig: { responseMimeType: "application/json", responseSchema }
             };
-            const apiUrl = `https://vpn-my-proxy.speedify730.workers.dev/?https://generativelanguage.googleapis.com/v1beta/models/${cred.model}:generateContent?key=${cred.key}`;
+            const apiUrl = `https://vpn2-pro.herher650.workers.dev/?https://generativelanguage.googleapis.com/v1beta/models/${cred.model}:generateContent?key=${cred.key}`;
 
             const response = await fetch(apiUrl, {
                 method: 'POST',
@@ -2908,7 +2908,7 @@ async function callRecapGemini(transcriptText, rewriteLevel, maxRetries, timeout
                     responseSchema
                 }
             };
-            const apiUrl = `https://vpn-my-proxy.speedify730.workers.dev/?https://generativelanguage.googleapis.com/v1beta/models/${cred.model}:generateContent?key=${cred.key}`;
+            const apiUrl = `https://vpn2-pro.herher650.workers.dev/?https://generativelanguage.googleapis.com/v1beta/models/${cred.model}:generateContent?key=${cred.key}`;
 
             const response = await fetch(apiUrl, {
                 method: 'POST',
