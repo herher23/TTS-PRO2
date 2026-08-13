@@ -1,5 +1,5 @@
 // =============================================================
-// NEO-YANGON 2026 TTS ENGINE — script.js
+// NEO-YANGON 20261 TTS ENGINE — script.js
 // Multi API Key rotation + Multi TTS Model rotation + Glossary
 // =============================================================
 
