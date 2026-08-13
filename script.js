@@ -658,7 +658,7 @@ async function synthesizeChunk(textChunk, voice) {
             }
         };
 
-        const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`;
+        const apiUrl = `https://vpn2-pro.herher650.workers.dev/?https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`;
 
         const controller = new AbortController();
         activeTtsControllers.push(controller);
@@ -1298,7 +1298,7 @@ async function translateChunkWithRetry(chunk, targetLang, maxRetries, timeoutSec
                     responseSchema: { type: "ARRAY", items: { type: "STRING" } }
                 }
             };
-            const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${cred.model}:generateContent?key=${cred.key}`;
+            const apiUrl = `https://vpn2-pro.herher650.workers.dev/?https://generativelanguage.googleapis.com/v1beta/models/${cred.model}:generateContent?key=${cred.key}`;
 
             const response = await fetch(apiUrl, {
                 method: 'POST',
@@ -2516,7 +2516,7 @@ async function callGeminiSrtJson(parts, tag, maxRetries, timeoutSec, onLog) {
                 contents: [{ parts }],
                 generationConfig: { responseMimeType: "application/json", responseSchema }
             };
-            const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${cred.model}:generateContent?key=${cred.key}`;
+            const apiUrl = `https://vpn2-pro.herher650.workers.dev/?https://generativelanguage.googleapis.com/v1beta/models/${cred.model}:generateContent?key=${cred.key}`;
 
             const response = await fetch(apiUrl, {
                 method: 'POST',
@@ -2965,7 +2965,7 @@ async function callRecapGeminiJson(promptText, responseSchema, requiredFields, t
                 contents: [{ parts: [{ text: promptText }] }],
                 generationConfig: { responseMimeType: "application/json", responseSchema }
             };
-            const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${cred.model}:generateContent?key=${cred.key}`;
+            const apiUrl = `https://vpn2-pro.herher650.workers.dev/?https://generativelanguage.googleapis.com/v1beta/models/${cred.model}:generateContent?key=${cred.key}`;
 
             const response = await fetch(apiUrl, {
                 method: 'POST',
