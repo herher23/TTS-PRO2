@@ -8,6 +8,7 @@ const textInput = document.getElementById('textInput');
 const charCount = document.getElementById('charCount');
 const clearBtn = document.getElementById('clearBtn');
 const generateBtn = document.getElementById('generateBtn');
+const stopGenerateBtn = document.getElementById('stopGenerateBtn');
 const promptBtns = document.querySelectorAll('.prompt-btn');
 const voiceSelect = document.getElementById('voiceSelect');
 const voiceInfo = document.getElementById('voiceInfo');
@@ -72,7 +73,11 @@ let clarityFilterNode;
 let animationFrameId;
 
 let currentAudioBlob = null;
+let currentAudioObjectUrl = null; // tracks the last blob: URL handed to audioPlayer.src so we can revoke it (see handleSynthesizeAudio)
 let isGenerating = false;
+let ttsAborted = false;
+let activeTtsControllers = [];
+const TTS_CHUNK_TIMEOUT_SEC = 60; // per-chunk network timeout for the TTS engine — previously unbounded (see synthesizeChunk)
 let visualizerMode = 'spectrum';
 let clarityBoostActive = true;
 let cyberReverbActive = false;
@@ -89,13 +94,16 @@ const VOICES = [
     { id: "Algieba", name: "Algieba (Deep Resonant)", detail: "နက်ရှိုင်းပြီး တည်ငြိမ်သော အသံ (Deep, resonant tone)" }
 ];
 
-// Default model list — only the two below are confirmed Gemini TTS model IDs.
-// Add any additional model IDs your key(s) actually have access to (one per line)
-// in the "TTS Model List" box in the UI; rotation works across however many you list.
+// Default model list. gemini-2.5-flash-preview-tts / gemini-2.5-pro-preview-tts are the
+// long-standing stable Gemini TTS IDs; gemini-3.1-flash-tts-preview is a newer streaming-
+// capable TTS preview model. Model availability/naming can change and depends on what your
+// key has access to — add or remove IDs (one per line) in the "TTS Model List" box in the
+// UI at any time; rotation works across however many you list. If a model 404s for your
+// key, just delete it from the list rather than relying on this default.
 const DEFAULT_MODELS = [
-  "gemini-3.1-flash-tts-preview",
     "gemini-2.5-flash-preview-tts",
-    "gemini-2.5-pro-preview-tts"
+    "gemini-2.5-pro-preview-tts",
+    "gemini-3.1-flash-tts-preview"
 ];
 
 // =============================================================
@@ -115,22 +123,34 @@ function parseListInput(raw) {
     return raw.split(/[\n,]/).map(s => s.trim()).filter(Boolean);
 }
 
+// Safe localStorage helpers — in Safari private-mode / storage-disabled environments,
+// every localStorage.getItem/setItem call throws, which previously took down the whole
+// DOMContentLoaded init chain with no visible error and left the app completely unusable.
+// These wrappers catch that: reads fall back to null (same as a missing key), writes
+// silently no-op — the app keeps working for the current session, just without persistence.
+function safeLsGet(key) {
+    try { return localStorage.getItem(key); } catch (e) { return null; }
+}
+function safeLsSet(key, value) {
+    try { localStorage.setItem(key, value); return true; } catch (e) { return false; }
+}
+
 function getKeys() {
-    return parseListInput(localStorage.getItem(LS_KEYS) || '');
+    return parseListInput(safeLsGet(LS_KEYS) || '');
 }
 function getModels() {
-    const stored = localStorage.getItem(LS_MODELS);
+    const stored = safeLsGet(LS_MODELS);
     if (stored === null) return DEFAULT_MODELS.slice();
     const list = parseListInput(stored);
     return list.length ? list : DEFAULT_MODELS.slice();
 }
 function getIndex(key, len) {
-    let idx = parseInt(localStorage.getItem(key) || '0', 10);
+    let idx = parseInt(safeLsGet(key) || '0', 10);
     if (isNaN(idx) || len === 0) idx = 0;
     return idx % Math.max(len, 1);
 }
 function setIndex(key, idx, len) {
-    localStorage.setItem(key, String(len > 0 ? (idx % len) : 0));
+    safeLsSet(key, String(len > 0 ? (idx % len) : 0));
 }
 
 function updateBadges() {
@@ -142,15 +162,15 @@ function updateBadges() {
 }
 
 function loadKeysModelsIntoInputs() {
-    apiKeysInput.value = (localStorage.getItem(LS_KEYS) || '').split(',').join('\n').trim();
-    const storedModels = localStorage.getItem(LS_MODELS);
+    apiKeysInput.value = (safeLsGet(LS_KEYS) || '').split(',').join('\n').trim();
+    const storedModels = safeLsGet(LS_MODELS);
     modelsInput.value = storedModels ? parseListInput(storedModels).join('\n') : DEFAULT_MODELS.join('\n');
     updateBadges();
 }
 
 saveKeysModelsBtn.addEventListener('click', () => {
-    localStorage.setItem(LS_KEYS, apiKeysInput.value.trim());
-    localStorage.setItem(LS_MODELS, modelsInput.value.trim());
+    safeLsSet(LS_KEYS, apiKeysInput.value.trim());
+    safeLsSet(LS_MODELS, modelsInput.value.trim());
     setIndex(LS_KEY_IDX, 0, getKeys().length);
     setIndex(LS_MODEL_IDX, 0, getModels().length);
     updateBadges();
@@ -165,53 +185,72 @@ toggleKeyPanelBtn.addEventListener('click', () => {
     icon.classList.toggle('fa-chevron-up');
 });
 
-// Round-robin credential picker: returns {key, model, keyIdx, modelIdx}
-function nextCredential() {
-    const keys = getKeys();
-    const models = getModels();
-    if (keys.length === 0) throw new Error('API key မထည့်ရသေးပါ — Key & Model Rotation panel တွင် Gemini API key အနည်းဆုံးတစ်ခု ထည့်ပါ။');
-    if (models.length === 0) throw new Error('TTS model list ဗလာဖြစ်နေပါသည်။');
+// =============================================================
+// Shared round-robin "key + model" credential picker factory.
+// Used by the TTS engine, Translator, AI Timestamp Fix / AI SRT Format, and Recap Studio —
+// four tabs that each previously hand-copied an almost-identical next*/advance* pair (5
+// copies total counting Transcribe's differently-shaped provider pool). Each tab keeps its
+// own model list + model-index localStorage pointer, but all rotate across the same shared
+// Gemini API key pool (LS_KEY_IDX). Consolidating here means a fix only has to happen once.
+// advance() returns null when the key pool is empty (e.g. cleared mid-run) so callers can
+// stop retrying instead of looping on undefined key/model.
+function makeGeminiCredentialPicker(modelIdxKey, getModelsFn, noKeyMsg) {
+    function next() {
+        const keys = getKeys();
+        const models = getModelsFn();
+        if (keys.length === 0) throw new Error(noKeyMsg);
 
-    const keyIdx = getIndex(LS_KEY_IDX, keys.length);
-    const modelIdx = getIndex(LS_MODEL_IDX, models.length);
+        const keyIdx = getIndex(LS_KEY_IDX, keys.length);
+        const modelIdx = getIndex(modelIdxKey, models.length);
 
-    // advance pointers for the NEXT call (round-robin across every request)
-    setIndex(LS_KEY_IDX, keyIdx + 1, keys.length);
-    if (keyIdx + 1 >= keys.length) {
-        setIndex(LS_MODEL_IDX, modelIdx + 1, models.length);
+        // advance pointers for the NEXT call (round-robin across every request)
+        setIndex(LS_KEY_IDX, keyIdx + 1, keys.length);
+        if (keyIdx + 1 >= keys.length) {
+            setIndex(modelIdxKey, modelIdx + 1, models.length);
+        }
+        updateBadges();
+
+        return { key: keys[keyIdx], model: models[modelIdx], keyIdx, modelIdx, keys, models };
     }
-    updateBadges();
 
-    return { key: keys[keyIdx], model: models[modelIdx], keyIdx, modelIdx, keys, models };
+    // Force-advance to a different credential (used after a failed attempt)
+    function advance() {
+        const keys = getKeys();
+        const models = getModelsFn();
+        if (keys.length === 0) return null;
+        const keyIdx = getIndex(LS_KEY_IDX, keys.length);
+        setIndex(LS_KEY_IDX, keyIdx + 1, keys.length);
+        if (keyIdx + 1 >= keys.length) {
+            const modelIdx = getIndex(modelIdxKey, models.length);
+            setIndex(modelIdxKey, modelIdx + 1, models.length);
+        }
+        updateBadges();
+        return { key: keys[getIndex(LS_KEY_IDX, keys.length)], model: models[getIndex(modelIdxKey, models.length)] };
+    }
+
+    return { next, advance };
 }
 
-// Force-advance to a different credential (used after a failed attempt)
-function advanceCredential() {
-    const keys = getKeys();
-    const models = getModels();
-    const keyIdx = getIndex(LS_KEY_IDX, keys.length);
-    setIndex(LS_KEY_IDX, keyIdx + 1, keys.length);
-    if (keyIdx + 1 >= keys.length) {
-        const modelIdx = getIndex(LS_MODEL_IDX, models.length);
-        setIndex(LS_MODEL_IDX, modelIdx + 1, models.length);
-    }
-    updateBadges();
-    return { key: keys[getIndex(LS_KEY_IDX, keys.length)], model: models[getIndex(LS_MODEL_IDX, models.length)] };
-}
+const ttsCredentialPicker = makeGeminiCredentialPicker(
+    LS_MODEL_IDX, getModels,
+    'API key မထည့်ရသေးပါ — Key & Model Rotation panel တွင် Gemini API key အနည်းဆုံးတစ်ခု ထည့်ပါ။'
+);
+function nextCredential() { return ttsCredentialPicker.next(); }
+function advanceCredential() { return ttsCredentialPicker.advance(); }
 
 // =============================================================
 // Glossary / Global Memory
 // =============================================================
 function getGlossary() {
     try {
-        return JSON.parse(localStorage.getItem(LS_GLOSSARY) || '[]');
+        return JSON.parse(safeLsGet(LS_GLOSSARY) || '[]');
     } catch (e) { return []; }
 }
 function saveGlossary(list) {
-    localStorage.setItem(LS_GLOSSARY, JSON.stringify(list));
+    safeLsSet(LS_GLOSSARY, JSON.stringify(list));
 }
 function isGlossaryEnabled() {
-    return localStorage.getItem(LS_GLOSSARY_ENABLED) !== 'false';
+    return safeLsGet(LS_GLOSSARY_ENABLED) !== 'false';
 }
 
 // Global Memory / Glossary is one shared list (LS_GLOSSARY) rendered into every
@@ -257,6 +296,19 @@ function escapeHtml(str) {
     return div.innerHTML;
 }
 
+// Shared log-line factory — Translator, Transcribe, and Recap Studio each previously
+// hand-copied the exact same 6-line function (only the target log-box element differed).
+// Bound to a specific box at creation time so call sites (logTrans(msg), etc.) don't change.
+function makeLogger(logBoxEl) {
+    return function (msg, level) {
+        const line = document.createElement('div');
+        line.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
+        line.className = level === 'ok' ? 'log-entry-ok' : level === 'warn' ? 'log-entry-warn' : level === 'err' ? 'log-entry-err' : '';
+        logBoxEl.appendChild(line);
+        logBoxEl.scrollTop = logBoxEl.scrollHeight;
+    };
+}
+
 glossaryAddBtn.addEventListener('click', () => {
     const term = glossaryTermInput.value.trim();
     const repl = glossaryReplInput.value.trim();
@@ -270,7 +322,7 @@ glossaryAddBtn.addEventListener('click', () => {
 });
 
 glossaryEnabledChk.addEventListener('change', () => {
-    localStorage.setItem(LS_GLOSSARY_ENABLED, glossaryEnabledChk.checked ? 'true' : 'false');
+    safeLsSet(LS_GLOSSARY_ENABLED, glossaryEnabledChk.checked ? 'true' : 'false');
     if (transGlossaryEnabledChk) transGlossaryEnabledChk.checked = glossaryEnabledChk.checked;
 });
 
@@ -290,7 +342,7 @@ if (transGlossaryAddBtn) {
 
 if (transGlossaryEnabledChk) {
     transGlossaryEnabledChk.addEventListener('change', () => {
-        localStorage.setItem(LS_GLOSSARY_ENABLED, transGlossaryEnabledChk.checked ? 'true' : 'false');
+        safeLsSet(LS_GLOSSARY_ENABLED, transGlossaryEnabledChk.checked ? 'true' : 'false');
         glossaryEnabledChk.checked = transGlossaryEnabledChk.checked;
     });
 }
@@ -315,7 +367,7 @@ function applyGlossary(text) {
 function applyTheme(theme) {
     document.documentElement.setAttribute('data-theme', theme);
     themeLabel.textContent = theme === 'dark' ? 'DARK' : 'LIGHT';
-    localStorage.setItem(LS_THEME, theme);
+    safeLsSet(LS_THEME, theme);
 }
 
 themeToggleBtn.addEventListener('click', () => {
@@ -327,7 +379,7 @@ themeToggleBtn.addEventListener('click', () => {
 // Init
 // =============================================================
 window.addEventListener('DOMContentLoaded', () => {
-    applyTheme(localStorage.getItem(LS_THEME) || 'dark');
+    applyTheme(safeLsGet(LS_THEME) || 'dark');
     initVoices();
     loadKeysModelsIntoInputs();
     renderGlossary();
@@ -579,7 +631,11 @@ function splitTextIntoChunks(text, maxChunkLen = 1200) {
     return chunks;
 }
 
-// Single Chunk TTS Fetching Helper — rotates key/model on failure automatically
+// Single Chunk TTS Fetching Helper — rotates key/model on failure automatically.
+// Previously had no AbortController/timeout at all (unlike every other tab in the app),
+// so a single hung request could freeze generation with no way to cancel except a full
+// page reload. Now every attempt is time-boxed (TTS_CHUNK_TIMEOUT_SEC) and every in-flight
+// controller is tracked in activeTtsControllers so the STOP button can abort them instantly.
 async function synthesizeChunk(textChunk, voice) {
     const totalCombos = Math.max(getKeys().length * getModels().length, 1);
     const maxAttempts = Math.min(totalCombos, 12);
@@ -588,6 +644,7 @@ async function synthesizeChunk(textChunk, voice) {
     let lastError;
 
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
+        if (ttsAborted) throw new Error('Stopped by user');
         const { key, model } = cred;
         const payload = {
             contents: [{ parts: [{ text: textChunk }] }],
@@ -603,19 +660,28 @@ async function synthesizeChunk(textChunk, voice) {
 
         const apiUrl = `https://vpn2-pro.herher650.workers.dev/?https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`;
 
+        const controller = new AbortController();
+        activeTtsControllers.push(controller);
+        const timer = setTimeout(() => controller.abort(), TTS_CHUNK_TIMEOUT_SEC * 1000);
+
         try {
             const response = await fetch(apiUrl, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(payload)
+                body: JSON.stringify(payload),
+                signal: controller.signal
             });
+            clearTimeout(timer);
 
             if (!response.ok) {
                 // Rotate away from rate-limited / invalid keys or unavailable models
                 if ([400, 401, 403, 404, 429].includes(response.status)) {
                     lastError = new Error(`HTTP ${response.status} (key/model rotated)`);
                     setStatus(`KEY/MODEL FAILED (${response.status}) — ROTATING...`, "text-yellow-400");
-                    cred = advanceCredential();
+                    const next = advanceCredential();
+                    if (!next) break;
+                    cred = next;
+                    if (!ttsAborted) await sleep(retryBackoffMs(attempt));
                     continue;
                 }
                 throw new Error(`HTTP ${response.status}`);
@@ -634,9 +700,21 @@ async function synthesizeChunk(textChunk, voice) {
                 throw new Error("Invalid voice audio chunk response.");
             }
         } catch (e) {
-            lastError = e;
-            cred = advanceCredential();
+            clearTimeout(timer);
+            if (e.name === 'AbortError') {
+                if (ttsAborted) throw new Error('Stopped by user');
+                lastError = new Error(`Timeout (${TTS_CHUNK_TIMEOUT_SEC}s)`);
+                setStatus(`TIMEOUT (${TTS_CHUNK_TIMEOUT_SEC}s) — ROTATING...`, "text-yellow-400");
+            } else {
+                lastError = e;
+            }
+            const next = advanceCredential();
+            if (!next) break;
+            cred = next;
+        } finally {
+            activeTtsControllers = activeTtsControllers.filter(c => c !== controller);
         }
+        if (!ttsAborted) await sleep(retryBackoffMs(attempt));
     }
 
     throw lastError || new Error("All API keys/models failed.");
@@ -657,6 +735,7 @@ async function handleSynthesizeAudio() {
 
     if (isGenerating) return;
     isGenerating = true;
+    ttsAborted = false;
 
     const text = applyGlossary(rawText);
     const voice = voiceSelect.value;
@@ -664,6 +743,7 @@ async function handleSynthesizeAudio() {
     customControls.classList.add('opacity-50', 'pointer-events-none');
     generateBtn.disabled = true;
     generateBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin mr-2"></i>ထုတ်လုပ်နေသည်...';
+    if (stopGenerateBtn) stopGenerateBtn.disabled = false;
 
     setStatus("CONNECTING TO NEURAL TTS CORE...", "text-yellow-400");
 
@@ -681,6 +761,7 @@ async function handleSynthesizeAudio() {
         }
 
         for (let i = 0; i < chunks.length; i++) {
+            if (ttsAborted) throw new Error('Stopped by user');
             const currentChunkNum = i + 1;
             const progressPct = Math.round((currentChunkNum / chunks.length) * 100);
 
@@ -708,7 +789,13 @@ async function handleSynthesizeAudio() {
 
         currentAudioBlob = createWavBlob(mergedPcm.buffer, sampleRate);
 
+        // Revoke the PREVIOUS blob: URL before handing out a new one — generating repeatedly
+        // in one session used to leak a fresh object URL (and its backing memory) every time.
+        if (currentAudioObjectUrl) {
+            URL.revokeObjectURL(currentAudioObjectUrl);
+        }
         const audioUrl = URL.createObjectURL(currentAudioBlob);
+        currentAudioObjectUrl = audioUrl;
         audioPlayer.src = audioUrl;
         audioPlayer.playbackRate = parseFloat(speedSlider.value);
 
@@ -724,14 +811,24 @@ async function handleSynthesizeAudio() {
 
     } catch (err) {
         console.error("TTS Synthesis Error:", err);
-        setStatus(`SYNTHESIS FAILED: ${err.message}`, "text-red-400");
+        setStatus(ttsAborted ? "SYNTHESIS STOPPED BY USER" : `SYNTHESIS FAILED: ${err.message}`, ttsAborted ? "text-yellow-400" : "text-red-400");
     } finally {
         isGenerating = false;
         loadingOverlay.classList.add('hidden');
         generateBtn.disabled = false;
         generateBtn.innerHTML = '<i class="fa-solid fa-bolt text-yellow-300 text-base"></i><span>အသံထုတ်လုပ်မည် (SYNTHESIZE)</span>';
+        if (stopGenerateBtn) stopGenerateBtn.disabled = true;
     }
 }
+
+function handleStopGenerate() {
+    ttsAborted = true;
+    activeTtsControllers.forEach(c => { try { c.abort(); } catch (e) {} });
+    activeTtsControllers = [];
+    setStatus("ရပ်တန့်ရန် တောင်းဆိုလိုက်ပါသည်...", "text-yellow-400");
+    if (stopGenerateBtn) stopGenerateBtn.disabled = true;
+}
+if (stopGenerateBtn) stopGenerateBtn.addEventListener('click', handleStopGenerate);
 
 function initWebAudioGraph() {
     if (!audioCtx) {
@@ -950,6 +1047,10 @@ const LS_TRANS_MODELS = 'neoyangon_trans_models';
 const LS_TRANS_MODEL_IDX = 'neoyangon_trans_model_idx';
 const LS_ACTIVE_TAB = 'neoyangon_active_tab';
 
+// These are current, generally-available Gemini text model IDs — but Google ships new
+// model generations regularly, so double-check availability for your key if one 404s, and
+// edit the list in the "Translation Model List" box in the UI rather than relying on this
+// default staying accurate forever.
 const DEFAULT_TRANS_MODELS = [
     "gemini-3.6-flash",
     "gemini-3.5-flash",
@@ -980,7 +1081,7 @@ function switchToolView(view) {
     tabRecapBtn.classList.toggle('tab-active', isRecap);
     tabTtsBtn.classList.toggle('tab-active', isTts);
 
-    localStorage.setItem(LS_ACTIVE_TAB, view);
+    safeLsSet(LS_ACTIVE_TAB, view);
 }
 
 tabTranslatorBtn.addEventListener('click', () => switchToolView('translator'));
@@ -999,19 +1100,19 @@ toggleTransKeyPanelBtn.addEventListener('click', () => {
 // Translation model list (separate rotation pointer, shared keys)
 // =============================================================
 function getTransModels() {
-    const stored = localStorage.getItem(LS_TRANS_MODELS);
+    const stored = safeLsGet(LS_TRANS_MODELS);
     if (stored === null) return DEFAULT_TRANS_MODELS.slice();
     const list = parseListInput(stored);
     return list.length ? list : DEFAULT_TRANS_MODELS.slice();
 }
 
 function loadTransModelsIntoInput() {
-    const stored = localStorage.getItem(LS_TRANS_MODELS);
+    const stored = safeLsGet(LS_TRANS_MODELS);
     transModelsInput.value = stored ? parseListInput(stored).join('\n') : DEFAULT_TRANS_MODELS.join('\n');
 }
 
 saveTransModelsBtn.addEventListener('click', () => {
-    localStorage.setItem(LS_TRANS_MODELS, transModelsInput.value.trim());
+    safeLsSet(LS_TRANS_MODELS, transModelsInput.value.trim());
     setIndex(LS_TRANS_MODEL_IDX, 0, getTransModels().length);
     transSaveStatusMsg.textContent = 'သိမ်းပြီးပါပြီ ✓';
     setTimeout(() => { transSaveStatusMsg.textContent = ''; }, 2500);
@@ -1019,65 +1120,51 @@ saveTransModelsBtn.addEventListener('click', () => {
 
 // Round-robin credential picker for text translation — shares the key pointer (LS_KEY_IDX)
 // with the TTS engine (same underlying key pool) but rotates its OWN model list independently.
+const transCredentialPicker = makeGeminiCredentialPicker(
+    LS_TRANS_MODEL_IDX, getTransModels,
+    'API key မထည့်ရသေးပါ — "Text to Speech" tab ထဲက Key & Model Rotation panel တွင် Gemini API key အနည်းဆုံးတစ်ခု ထည့်ပါ။'
+);
 function nextTransCredential() {
-    const keys = getKeys();
-    const models = getTransModels();
-    if (keys.length === 0) throw new Error('API key မထည့်ရသေးပါ — "Text to Speech" tab ထဲက Key & Model Rotation panel တွင် Gemini API key အနည်းဆုံးတစ်ခု ထည့်ပါ။');
-    if (models.length === 0) throw new Error('Translation model list ဗလာဖြစ်နေပါသည်။');
-
-    const keyIdx = getIndex(LS_KEY_IDX, keys.length);
-    const modelIdx = getIndex(LS_TRANS_MODEL_IDX, models.length);
-
-    setIndex(LS_KEY_IDX, keyIdx + 1, keys.length);
-    if (keyIdx + 1 >= keys.length) {
-        setIndex(LS_TRANS_MODEL_IDX, modelIdx + 1, models.length);
-    }
-    updateBadges();
-
-    return { key: keys[keyIdx], model: models[modelIdx] };
+    if (getTransModels().length === 0) throw new Error('Translation model list ဗလာဖြစ်နေပါသည်။');
+    return transCredentialPicker.next();
 }
-
-function advanceTransCredential() {
-    const keys = getKeys();
-    const models = getTransModels();
-    if (keys.length === 0 || models.length === 0) return { key: keys[0], model: models[0] };
-    const keyIdx = getIndex(LS_KEY_IDX, keys.length);
-    setIndex(LS_KEY_IDX, keyIdx + 1, keys.length);
-    if (keyIdx + 1 >= keys.length) {
-        const modelIdx = getIndex(LS_TRANS_MODEL_IDX, models.length);
-        setIndex(LS_TRANS_MODEL_IDX, modelIdx + 1, models.length);
-    }
-    updateBadges();
-    return { key: keys[getIndex(LS_KEY_IDX, keys.length)], model: models[getIndex(LS_TRANS_MODEL_IDX, models.length)] };
-}
+function advanceTransCredential() { return transCredentialPicker.advance(); }
 
 // =============================================================
 // SRT Parsing / Rebuilding
 // =============================================================
+// Returns an array of {timeLine, textLines} cues. Malformed cues are skipped rather than
+// throwing, but the count of skipped cues is exposed via subs.droppedCount (a plain extra
+// property on the array — doesn't affect .length/forEach/etc.) so callers can warn the user
+// instead of silently losing subtitles.
 function parseSrt(rawText) {
     const normalized = rawText.replace(/\r\n/g, '\n').replace(/\r/g, '\n').trim();
     if (!normalized) return [];
     const blocks = normalized.split(/\n\s*\n/);
     const subs = [];
+    let droppedCount = 0;
 
     blocks.forEach(block => {
+        if (!block.trim()) return; // pure whitespace between cues — not a dropped cue
         const lines = block.split('\n');
-        if (lines.length < 2) return;
+        if (lines.length < 2) { droppedCount++; return; }
         let li = 0;
 
         // Optional leading numeric index line
         if (/^\d+$/.test(lines[li].trim())) {
             li++;
         }
-        if (!lines[li] || !lines[li].includes('-->')) return; // malformed cue, skip
+        if (!lines[li] || !lines[li].includes('-->')) { droppedCount++; return; } // malformed cue, skip
         const timeLine = lines[li].trim();
         li++;
 
         const textLines = lines.slice(li).filter((l, i, arr) => !(i === arr.length - 1 && l.trim() === ''));
-        if (textLines.length === 0) return;
+        if (textLines.length === 0) { droppedCount++; return; }
 
         subs.push({ timeLine, textLines });
     });
+
+    subs.droppedCount = droppedCount;
 
     return subs;
 }
@@ -1105,13 +1192,13 @@ function chunkArray(arr, size) {
 // replacement Glossary above).
 // =============================================================
 function getContextMemory() {
-    return localStorage.getItem(LS_CONTEXT_MEMORY) || '';
+    return safeLsGet(LS_CONTEXT_MEMORY) || '';
 }
 function saveContextMemory(text) {
-    localStorage.setItem(LS_CONTEXT_MEMORY, text);
+    safeLsSet(LS_CONTEXT_MEMORY, text);
 }
 function isContextMemoryEnabled() {
-    return localStorage.getItem(LS_CONTEXT_MEMORY_ENABLED) !== 'false';
+    return safeLsGet(LS_CONTEXT_MEMORY_ENABLED) !== 'false';
 }
 
 if (saveContextMemoryBtn) {
@@ -1130,7 +1217,7 @@ if (globalContextMemory) {
 }
 if (contextMemoryEnabledChk) {
     contextMemoryEnabledChk.addEventListener('change', () => {
-        localStorage.setItem(LS_CONTEXT_MEMORY_ENABLED, contextMemoryEnabledChk.checked ? 'true' : 'false');
+        safeLsSet(LS_CONTEXT_MEMORY_ENABLED, contextMemoryEnabledChk.checked ? 'true' : 'false');
     });
 }
 
@@ -1226,6 +1313,7 @@ async function translateChunkWithRetry(chunk, targetLang, maxRetries, timeoutSec
                     logTrans(`HTTP ${response.status} — key/model rotating...`, 'warn');
                     cred = advanceTransCredential();
                     lastErr = new Error(`HTTP ${response.status}`);
+                    if (!translationAborted) await sleep(retryBackoffMs(attempt));
                     continue;
                 }
                 throw new Error(`HTTP ${response.status}`);
@@ -1258,6 +1346,7 @@ async function translateChunkWithRetry(chunk, targetLang, maxRetries, timeoutSec
         } finally {
             activeTransControllers = activeTransControllers.filter(c => c !== controller);
         }
+        if (!translationAborted) await sleep(retryBackoffMs(attempt));
     }
 
     throw lastErr || new Error('All retries failed');
@@ -1361,13 +1450,7 @@ function updateTransProgress(done, total) {
     transProgressFill.style.width = `${pct}%`;
 }
 
-function logTrans(msg, level) {
-    const line = document.createElement('div');
-    line.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
-    line.className = level === 'ok' ? 'log-entry-ok' : level === 'warn' ? 'log-entry-warn' : level === 'err' ? 'log-entry-err' : '';
-    transLogBox.appendChild(line);
-    transLogBox.scrollTop = transLogBox.scrollHeight;
-}
+const logTrans = makeLogger(transLogBox);
 
 function renderWorkerGrid(count) {
     transWorkerGrid.innerHTML = '';
@@ -1403,7 +1486,8 @@ function updateSrtInputMeta() {
     const subs = parseSrt(srtInput.value);
     const chunkSize = Math.max(parseInt(chunkSizeInput.value, 10) || 30, 1);
     const chunkCount = subs.length ? Math.ceil(subs.length / chunkSize) : 0;
-    srtInputMeta.textContent = `Subtitles: ${subs.length} | Chunks: ${chunkCount}`;
+    const droppedNote = subs.droppedCount ? ` | ⚠ Format မမှန်ကန်၍ ကျော်ထားသော cue: ${subs.droppedCount}` : '';
+    srtInputMeta.textContent = `Subtitles: ${subs.length} | Chunks: ${chunkCount}${droppedNote}`;
 }
 
 srtInput.addEventListener('input', updateSrtInputMeta);
@@ -1561,6 +1645,9 @@ async function handleTranslateSrt() {
         logTrans('ERROR: SRT format မှန်ကန်စွာ parse လုပ်၍မရပါ', 'err');
         return;
     }
+    if (subs.droppedCount > 0) {
+        logTrans(`သတိပေးချက်: format မမှန်ကန်သော cue ${subs.droppedCount} ခုကို parse လုပ်စဉ် ကျော်ခဲ့ပါသည် — output SRT တွင် ဒီ cue များ ပါဝင်မည် မဟုတ်ပါ`, 'warn');
+    }
 
     if (isTranslating) return;
     isTranslating = true;
@@ -1668,15 +1755,22 @@ sendToTtsBtn.addEventListener('click', () => {
         logTrans('ပထမဆုံး ဘာသာပြန်ပြီးမှ TTS ကို ပို့နိုင်ပါမည်', 'warn');
         return;
     }
-    const dialogueOnly = lastTranslatedSubs
+    const fullDialogue = lastTranslatedSubs
         .map(s => (s.translatedText || '').replace(/\n/g, ' '))
-        .join('\n')
-        .slice(0, 10000);
+        .join('\n');
+    const dialogueOnly = fullDialogue.slice(0, 10000);
+    const wasTruncated = fullDialogue.length > dialogueOnly.length;
 
     textInput.value = dialogueOnly;
     charCount.textContent = dialogueOnly.length;
     switchToolView('tts');
-    setStatus('TRANSLATOR မှ စာသား လက်ခံရရှိပါပြီ', 'text-emerald-400');
+    if (wasTruncated) {
+        // Previously this silently cut the text with no indication anything was lost.
+        setStatus(`⚠ TRANSLATOR မှ စာသား လက်ခံရရှိပါပြီ (10,000 လုံး ကျော်သဖြင့် ${fullDialogue.length - dialogueOnly.length} လုံး ဖြတ်ထားပါသည်)`, 'text-yellow-400');
+        logTrans(`သတိပေးချက်: TTS သို့ ပို့သော စာသားသည် 10,000 လုံး ကျော်နေသဖြင့် ကျန်ရှိသော ${fullDialogue.length - dialogueOnly.length} လုံးကို ဖြတ်တောက်ထားပါသည်`, 'warn');
+    } else {
+        setStatus('TRANSLATOR မှ စာသား လက်ခံရရှိပါပြီ', 'text-emerald-400');
+    }
 });
 
 translateBtn.addEventListener('click', handleTranslateSrt);
@@ -1691,7 +1785,7 @@ window.addEventListener('DOMContentLoaded', () => {
     updateSrtInputMeta();
     if (globalContextMemory) globalContextMemory.value = getContextMemory();
     if (contextMemoryEnabledChk) contextMemoryEnabledChk.checked = isContextMemoryEnabled();
-    const savedTab = localStorage.getItem(LS_ACTIVE_TAB) || 'transcribe';
+    const savedTab = safeLsGet(LS_ACTIVE_TAB) || 'transcribe';
     switchToolView(savedTab);
 });
 
@@ -1714,6 +1808,9 @@ const transcribeSaveStatusMsg = document.getElementById('transcribeSaveStatusMsg
 const gladiaKeyCountBadge = document.getElementById('gladiaKeyCountBadge');
 const groqKeyCountBadge = document.getElementById('groqKeyCountBadge');
 const assemblyaiKeyCountBadge = document.getElementById('assemblyaiKeyCountBadge');
+const timefixModelsInput = document.getElementById('timefixModelsInput');
+const saveTimefixModelsBtn = document.getElementById('saveTimefixModelsBtn');
+const timefixSaveStatusMsg = document.getElementById('timefixSaveStatusMsg');
 
 const mediaFileInput = document.getElementById('mediaFileInput');
 const mediaFileDropzone = document.getElementById('mediaFileDropzone');
@@ -1759,10 +1856,10 @@ let activeOutputFormat = 'srt';
 // =============================================================
 // Gladia / Groq key pool (own rotation pointer, own storage keys)
 // =============================================================
-function getGladiaKeys() { return parseListInput(localStorage.getItem(LS_GLADIA_KEYS) || ''); }
-function getGroqKeys() { return parseListInput(localStorage.getItem(LS_GROQ_KEYS) || ''); }
-function getGroqModel() { return localStorage.getItem(LS_GROQ_MODEL) || 'whisper-large-v3-turbo'; }
-function getAssemblyAiKeys() { return parseListInput(localStorage.getItem(LS_ASSEMBLYAI_KEYS) || ''); }
+function getGladiaKeys() { return parseListInput(safeLsGet(LS_GLADIA_KEYS) || ''); }
+function getGroqKeys() { return parseListInput(safeLsGet(LS_GROQ_KEYS) || ''); }
+function getGroqModel() { return safeLsGet(LS_GROQ_MODEL) || 'whisper-large-v3-turbo'; }
+function getAssemblyAiKeys() { return parseListInput(safeLsGet(LS_ASSEMBLYAI_KEYS) || ''); }
 
 function getTranscribeCredentialPool() {
     const pool = [];
@@ -1779,18 +1876,19 @@ function updateTranscribeBadges() {
 }
 
 function loadTranscribeKeysIntoInputs() {
-    gladiaKeysInput.value = (localStorage.getItem(LS_GLADIA_KEYS) || '').split(',').join('\n').trim();
-    groqKeysInput.value = (localStorage.getItem(LS_GROQ_KEYS) || '').split(',').join('\n').trim();
+    gladiaKeysInput.value = (safeLsGet(LS_GLADIA_KEYS) || '').split(',').join('\n').trim();
+    groqKeysInput.value = (safeLsGet(LS_GROQ_KEYS) || '').split(',').join('\n').trim();
     groqModelSelect.value = getGroqModel();
-    assemblyaiKeysInput.value = (localStorage.getItem(LS_ASSEMBLYAI_KEYS) || '').split(',').join('\n').trim();
+    assemblyaiKeysInput.value = (safeLsGet(LS_ASSEMBLYAI_KEYS) || '').split(',').join('\n').trim();
     updateTranscribeBadges();
+    loadTimefixModelsIntoInput();
 }
 
 saveTranscribeKeysBtn.addEventListener('click', () => {
-    localStorage.setItem(LS_GLADIA_KEYS, gladiaKeysInput.value.trim());
-    localStorage.setItem(LS_GROQ_KEYS, groqKeysInput.value.trim());
-    localStorage.setItem(LS_GROQ_MODEL, groqModelSelect.value);
-    localStorage.setItem(LS_ASSEMBLYAI_KEYS, assemblyaiKeysInput.value.trim());
+    safeLsSet(LS_GLADIA_KEYS, gladiaKeysInput.value.trim());
+    safeLsSet(LS_GROQ_KEYS, groqKeysInput.value.trim());
+    safeLsSet(LS_GROQ_MODEL, groqModelSelect.value);
+    safeLsSet(LS_ASSEMBLYAI_KEYS, assemblyaiKeysInput.value.trim());
     setIndex(LS_TRANSCRIBE_IDX, 0, getTranscribeCredentialPool().length);
     updateTranscribeBadges();
     transcribeSaveStatusMsg.textContent = 'သိမ်းပြီးပါပြီ ✓';
@@ -1830,17 +1928,34 @@ function formatBytes(bytes) {
     return `${(bytes / Math.pow(1024, i)).toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
 }
 
+// Best-effort, client-side size heads-up for the Gladia/Groq/AssemblyAI transcription pool.
+// Providers change their limits over time and this app has no way to know which plan/tier
+// the user's key is on, so this is informational only — the app still attempts the upload,
+// and transcribeMediaWithRotation() already rotates to the next provider on failure. Its
+// purpose is just to surface a plausible reason up front instead of a confusing silent
+// failure partway through (see review item on file-size guidance).
+function getMediaSizeWarning(bytes) {
+    const mb = bytes / (1024 * 1024);
+    const notes = [];
+    if (mb > 25) notes.push('Groq free-tier (25MB) fail နိုင်သည်');
+    if (mb > 100) notes.push('Groq dev-tier (100MB) ကိုပါ fail စေနိုင်သည်');
+    if (mb > 1000) notes.push('Gladia (1000MB) ကိုပါ fail စေနိုင်သည်');
+    if (mb > 2200) notes.push('AssemblyAI (2.2GB local-upload) ကိုပါ fail စေနိုင်သည်');
+    return notes.length ? ` ⚠ ${notes.join(' / ')}` : '';
+}
+
 function setSelectedMediaFile(file) {
     if (!file) return;
     selectedMediaFile = file;
-    mediaFileMeta.textContent = `${file.name} • ${formatBytes(file.size)}`;
+    const sizeWarning = getMediaSizeWarning(file.size);
+    mediaFileMeta.textContent = `${file.name} • ${formatBytes(file.size)}${sizeWarning}`;
     mediaFileDropzone.classList.add('border-emerald-500/50');
 
     const objectUrl = URL.createObjectURL(file);
     const probe = document.createElement(file.type.startsWith('video') ? 'video' : 'audio');
     probe.preload = 'metadata';
     probe.onloadedmetadata = () => {
-        mediaFileMeta.textContent = `${file.name} • ${formatBytes(file.size)} • ${formatTime(probe.duration)}`;
+        mediaFileMeta.textContent = `${file.name} • ${formatBytes(file.size)} • ${formatTime(probe.duration)}${sizeWarning}`;
         URL.revokeObjectURL(objectUrl);
     };
     probe.onerror = () => URL.revokeObjectURL(objectUrl);
@@ -1887,6 +2002,14 @@ function segmentsToSrt(segments) {
 }
 
 function sleep(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
+
+// Small exponential backoff before a retry after a failed attempt (HTTP error or timeout).
+// Previously every retry loop in the app re-fired immediately after rotating key/model,
+// which risked bursting straight into another rate limit on the next key too. Capped low
+// (≤2s) so it doesn't meaningfully slow down normal multi-key rotation.
+function retryBackoffMs(attempt) {
+    return Math.min(300 * Math.pow(1.7, attempt), 2000);
+}
 
 // =============================================================
 // Groq (Whisper) transcription call
@@ -2120,6 +2243,7 @@ async function transcribeMediaWithRotation(file, language, maxRetries, timeoutSe
             if (transcribeAborted) throw new Error('Stopped by user');
             cred = advanceTranscribeCredential();
             if (!cred) break;
+            await sleep(retryBackoffMs(attempt));
         }
     }
     throw lastErr || new Error('Gladia/Groq/AssemblyAI providers အားလုံး failed ဖြစ်သွားပါသည်');
@@ -2128,13 +2252,7 @@ async function transcribeMediaWithRotation(file, language, maxRetries, timeoutSe
 // =============================================================
 // Main transcribe handler
 // =============================================================
-function logTranscribe(msg, level) {
-    const line = document.createElement('div');
-    line.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
-    line.className = level === 'ok' ? 'log-entry-ok' : level === 'warn' ? 'log-entry-warn' : level === 'err' ? 'log-entry-err' : '';
-    transcribeLogBox.appendChild(line);
-    transcribeLogBox.scrollTop = transcribeLogBox.scrollHeight;
-}
+const logTranscribe = makeLogger(transcribeLogBox);
 
 async function handleTranscribeMedia() {
     if (!selectedMediaFile) {
@@ -2304,37 +2422,38 @@ sendTranscribeToTranslatorBtn.addEventListener('click', () => {
 // Reuses the same Gemini API keys as the TTS tab's Key & Model panel,
 // with its own small model list + rotation pointer.
 // =============================================================
+const LS_TIMEFIX_MODELS = 'neoyangon_timefix_models';
 const LS_TIMEFIX_MODEL_IDX = 'neoyangon_timefix_model_idx';
+// Current, generally-available Gemini text model IDs as of this writing — same caveat as
+// the other default lists: edit these from the UI (Transcription Key Pool panel) instead of
+// depending on this default staying accurate as Google ships new model generations.
 const DEFAULT_TIMEFIX_MODELS = [
     "gemini-3.6-flash",
     "gemini-3.5-flash"
 ];
-function getTimefixModels() { return DEFAULT_TIMEFIX_MODELS.slice(); }
+function getTimefixModels() {
+    const stored = safeLsGet(LS_TIMEFIX_MODELS);
+    if (stored === null) return DEFAULT_TIMEFIX_MODELS.slice();
+    const list = parseListInput(stored);
+    return list.length ? list : DEFAULT_TIMEFIX_MODELS.slice();
+}
+function loadTimefixModelsIntoInput() {
+    const stored = safeLsGet(LS_TIMEFIX_MODELS);
+    timefixModelsInput.value = stored ? parseListInput(stored).join('\n') : DEFAULT_TIMEFIX_MODELS.join('\n');
+}
+saveTimefixModelsBtn.addEventListener('click', () => {
+    safeLsSet(LS_TIMEFIX_MODELS, timefixModelsInput.value.trim());
+    setIndex(LS_TIMEFIX_MODEL_IDX, 0, getTimefixModels().length);
+    timefixSaveStatusMsg.textContent = 'သိမ်းပြီးပါပြီ ✓';
+    setTimeout(() => { timefixSaveStatusMsg.textContent = ''; }, 2500);
+});
 
-function nextTimefixCredential() {
-    const keys = getKeys();
-    const models = getTimefixModels();
-    if (keys.length === 0) throw new Error('API key မထည့်ရသေးပါ — "Text to Speech" tab ထဲက Key & Model Rotation panel တွင် Gemini API key အနည်းဆုံးတစ်ခု ထည့်ပါ။');
-    const keyIdx = getIndex(LS_KEY_IDX, keys.length);
-    const modelIdx = getIndex(LS_TIMEFIX_MODEL_IDX, models.length);
-    setIndex(LS_KEY_IDX, keyIdx + 1, keys.length);
-    if (keyIdx + 1 >= keys.length) setIndex(LS_TIMEFIX_MODEL_IDX, modelIdx + 1, models.length);
-    updateBadges();
-    return { key: keys[keyIdx], model: models[modelIdx] };
-}
-function advanceTimefixCredential() {
-    const keys = getKeys();
-    const models = getTimefixModels();
-    if (keys.length === 0) return null;
-    const keyIdx = getIndex(LS_KEY_IDX, keys.length);
-    setIndex(LS_KEY_IDX, keyIdx + 1, keys.length);
-    if (keyIdx + 1 >= keys.length) {
-        const modelIdx = getIndex(LS_TIMEFIX_MODEL_IDX, models.length);
-        setIndex(LS_TIMEFIX_MODEL_IDX, modelIdx + 1, models.length);
-    }
-    updateBadges();
-    return { key: keys[getIndex(LS_KEY_IDX, keys.length)], model: models[getIndex(LS_TIMEFIX_MODEL_IDX, models.length)] };
-}
+const timefixCredentialPicker = makeGeminiCredentialPicker(
+    LS_TIMEFIX_MODEL_IDX, getTimefixModels,
+    'API key မထည့်ရသေးပါ — "Text to Speech" tab ထဲက Key & Model Rotation panel တွင် Gemini API key အနည်းဆုံးတစ်ခု ထည့်ပါ။'
+);
+function nextTimefixCredential() { return timefixCredentialPicker.next(); }
+function advanceTimefixCredential() { return timefixCredentialPicker.advance(); }
 
 const TIMESTAMP_FIX_SYSTEM_PROMPT =
 `သင်သည် ပရော်ဖက်ရှင်နယ် SRT subtitle AI ဖြစ်သည် — အသံနှင့်ရုပ်ပုံ ဘာသာပြန်ဆိုခြင်းနှင့် စာတန်းထိုးအချိန်ညှိခြင်းဆိုင်ရာ ကျွမ်းကျင်ပညာရှင်။
@@ -2350,13 +2469,19 @@ const TIMESTAMP_FIX_SYSTEM_PROMPT =
 ကန့်သတ်ချက်များ:
 • အချိန်ကွာဟမှုမရှိစေရန် ညှိနှိုင်းခြင်း — စာသားနှင့် အသံ ထပ်တူမကျခြင်းမျိုး လုံးဝမရှိစေရန် "စကားပြောနှင့် အချိန်ကိုက်မှု" တိကျမှုကို ဦးစားပေးပါ။`;
 
-function buildTimestampFixPrompt(existingSrt) {
+// existingSrtChunk may be only a PART of the full SRT (see TIMEFIX_CHUNK_CUES below) —
+// totalChunks > 1 tells the model to treat it as a self-contained slice rather than
+// expecting the whole file, and to keep the same cue count instead of merging/splitting.
+function buildTimestampFixPrompt(existingSrtChunk, chunkIndex, totalChunks) {
+    const partNote = totalChunks > 1
+        ? `\n\nသတိပြုရန် — ဤသည်မှာ SRT အပြည့်အစုံ၏ Part ${chunkIndex + 1}/${totalChunks} သာဖြစ်သည် (media file အပြည့်အစုံကိုသာ ကြည့်ပြီး ဤ part ရှိ cue များကို timing ချိန်ညှိပေးပါ)။ ဤ part ထဲရှိ cue အရေအတွက်အတိုင်းသာ ပြန်ပေးပါ — ပေါင်းစည်းခြင်း/ခွဲခြင်း မလုပ်ပါနှင့်၊ sequence number ကို 1 မှ ပြန်စပါ (အပိုင်းများအားလုံးကို နောက်တွင် ပေါင်းစပ်ပေးပါမည်)။`
+        : '';
     return `${TIMESTAMP_FIX_SYSTEM_PROMPT}
 
-အောက်ပါ SRT မူကြမ်းသည် speech-to-text engine (Gladia/Groq/AssemblyAI) မှ auto-generate လုပ်ထားသော ရလဒ်ဖြစ်ပြီး timestamp အချို့ လွဲနေနိုင်ပါသည်။ တွဲပါ media file ကို တိုက်ရိုက် နားထောင်/ကြည့်ပြီး အထက်ပါ standard များနှင့်အညီ timestamp တိုင်းကို ပြန်လည်တိကျအောင် ချိန်ညှိပါ။ စာသားအကြောင်းအရာ (subtitle text) ကို လုံးဝမပြောင်းလဲပါနှင့် — start/end timing ကိုသာ ပြင်ဆင်ပေးပါ။ ပုံစံအတိအကျ (sequence number → timestamp line → text) ပါဝင်သော ပြင်ဆင်ပြီးသား SRT အပြည့်အစုံကိုသာ ပြန်ပေးပါ။
+အောက်ပါ SRT မူကြမ်းသည် speech-to-text engine (Gladia/Groq/AssemblyAI) မှ auto-generate လုပ်ထားသော ရလဒ်ဖြစ်ပြီး timestamp အချို့ လွဲနေနိုင်ပါသည်။ တွဲပါ media file ကို တိုက်ရိုက် နားထောင်/ကြည့်ပြီး အထက်ပါ standard များနှင့်အညီ timestamp တိုင်းကို ပြန်လည်တိကျအောင် ချိန်ညှိပါ။ စာသားအကြောင်းအရာ (subtitle text) ကို လုံးဝမပြောင်းလဲပါနှင့် — start/end timing ကိုသာ ပြင်ဆင်ပေးပါ။ ပုံစံအတိအကျ (sequence number → timestamp line → text) ပါဝင်သော ပြင်ဆင်ပြီးသား SRT အပြည့်အစုံကိုသာ ပြန်ပေးပါ။${partNote}
 
 --- ORIGINAL SRT START ---
-${existingSrt}
+${existingSrtChunk}
 --- ORIGINAL SRT END ---`;
 }
 
@@ -2369,13 +2494,14 @@ function fileToBase64(file) {
     });
 }
 
-async function callGeminiFixTimestamps(mediaFile, existingSrt, maxRetries, timeoutSec, onLog) {
+// Shared low-level retry/timeout/rotation caller for AI TIMESTAMP FIX + AI SRT FORMAT —
+// both are single-turn Gemini requests expecting { srt: string } back; they only differ in
+// what "parts" they send (media+text vs text-only) and the log tag shown to the user. This
+// replaces what used to be two nearly-identical ~70-line copies of the same retry loop.
+async function callGeminiSrtJson(parts, tag, maxRetries, timeoutSec, onLog) {
     let cred = nextTimefixCredential();
     let lastErr;
-
     const responseSchema = { type: "OBJECT", properties: { srt: { type: "STRING" } }, required: ["srt"] };
-    const base64Data = await fileToBase64(mediaFile);
-    const mimeType = mediaFile.type || 'application/octet-stream';
 
     for (let attempt = 0; attempt < Math.max(maxRetries, 1); attempt++) {
         if (transcribeAborted) throw new Error('Stopped by user');
@@ -2384,15 +2510,10 @@ async function callGeminiFixTimestamps(mediaFile, existingSrt, maxRetries, timeo
         const timer = setTimeout(() => controller.abort(), Math.max(timeoutSec, 30) * 1000);
 
         try {
-            if (onLog) onLog(`[TIMESTAMP-FIX] ${cred.model} ဖြင့် media ကို ခွဲခြမ်းစိတ်ဖြာနေသည် (attempt ${attempt + 1}/${Math.max(maxRetries, 1)})...`);
+            if (onLog) onLog(`[${tag}] ${cred.model} ဖြင့် ဆောင်ရွက်နေသည် (attempt ${attempt + 1}/${Math.max(maxRetries, 1)})...`);
 
             const payload = {
-                contents: [{
-                    parts: [
-                        { inline_data: { mime_type: mimeType, data: base64Data } },
-                        { text: buildTimestampFixPrompt(existingSrt) }
-                    ]
-                }],
+                contents: [{ parts }],
                 generationConfig: { responseMimeType: "application/json", responseSchema }
             };
             const apiUrl = `https://vpn2-pro.herher650.workers.dev/?https://generativelanguage.googleapis.com/v1beta/models/${cred.model}:generateContent?key=${cred.key}`;
@@ -2412,6 +2533,7 @@ async function callGeminiFixTimestamps(mediaFile, existingSrt, maxRetries, timeo
                     lastErr = new Error(`HTTP ${response.status}`);
                     if (!next) break;
                     cred = next;
+                    if (!transcribeAborted) await sleep(retryBackoffMs(attempt));
                     continue;
                 }
                 throw new Error(`HTTP ${response.status}`);
@@ -2439,8 +2561,51 @@ async function callGeminiFixTimestamps(mediaFile, existingSrt, maxRetries, timeo
         } finally {
             activeTranscribeAbortControllers = activeTranscribeAbortControllers.filter(c => c !== controller);
         }
+        if (!transcribeAborted) await sleep(retryBackoffMs(attempt));
     }
-    throw lastErr || new Error('AI Timestamp Fix — retries အားလုံး failed ဖြစ်သွားပါသည်');
+    throw lastErr || new Error(`${tag} — retries အားလုံး failed ဖြစ်သွားပါသည်`);
+}
+
+// Cues per Gemini request for AI TIMESTAMP FIX. Previously the ENTIRE SRT was requested
+// back in one JSON response alongside the full media file — on a 20-30 min video that could
+// exceed the model's output-token limit and fail/truncate. Splitting into cue-chunks keeps
+// each response small regardless of video length; the full media file is still sent with
+// every chunk (needed for audio/video correlation — there's no client-side ffmpeg here to
+// trim the media to match), so this trades some extra upload bandwidth for reliability.
+const TIMEFIX_CHUNK_CUES = 40;
+
+async function callGeminiFixTimestampsChunk(base64Data, mimeType, srtChunkText, chunkIndex, totalChunks, maxRetries, timeoutSec, onLog) {
+    const parts = [
+        { inline_data: { mime_type: mimeType, data: base64Data } },
+        { text: buildTimestampFixPrompt(srtChunkText, chunkIndex, totalChunks) }
+    ];
+    return callGeminiSrtJson(parts, 'TIMESTAMP-FIX', maxRetries, timeoutSec, onLog);
+}
+
+async function callGeminiFixTimestamps(mediaFile, existingSrt, maxRetries, timeoutSec, onLog) {
+    const subs = parseSrt(existingSrt);
+    // If the SRT doesn't parse cleanly, fall back to sending it as one unchunked block
+    // rather than silently dropping it — the model still sees the whole thing.
+    const cueChunks = subs.length > 0 ? chunkArray(subs, TIMEFIX_CHUNK_CUES) : [null];
+    const totalChunks = cueChunks.length;
+
+    const base64Data = await fileToBase64(mediaFile);
+    const mimeType = mediaFile.type || 'application/octet-stream';
+
+    const fixedTexts = [];
+    for (let i = 0; i < totalChunks; i++) {
+        if (transcribeAborted) throw new Error('Stopped by user');
+        const chunkSrtText = cueChunks[i] ? rebuildSrt(cueChunks[i]) : existingSrt;
+        if (onLog && totalChunks > 1) onLog(`[TIMESTAMP-FIX] Chunk ${i + 1}/${totalChunks} (cue ${cueChunks[i] ? cueChunks[i].length : subs.length} ခု) ပို့နေသည်...`);
+        const fixedText = await callGeminiFixTimestampsChunk(base64Data, mimeType, chunkSrtText, i, totalChunks, maxRetries, timeoutSec, onLog);
+        fixedTexts.push(fixedText);
+        if (onLog && totalChunks > 1) onLog(`[TIMESTAMP-FIX] Chunk ${i + 1}/${totalChunks} ပြီးဆုံးပါပြီ ✓`, 'ok');
+    }
+
+    // Merge every chunk's cues back together and renumber sequentially across the whole SRT.
+    const mergedSubs = [];
+    fixedTexts.forEach(text => { mergedSubs.push(...parseSrt(text)); });
+    return mergedSubs.length ? rebuildSrt(mergedSubs) : fixedTexts.join('\n');
 }
 
 async function handleFixTimestamps() {
@@ -2455,6 +2620,21 @@ async function handleFixTimestamps() {
     if (getKeys().length === 0) {
         logTranscribe('ERROR: Gemini API key မရှိပါ — "Text to Speech" tab ရဲ့ Key & Model Rotation panel တွင် key ထည့်ပါ', 'err');
         return;
+    }
+    // Gemini's inline-request payload limit (media sent as base64 alongside the prompt, no
+    // Files API here) has moved around — historically 20MB, raised to ~100MB (encoded) more
+    // recently — and can vary by account/region, so this is a conservative client-side guard
+    // rather than an authoritative limit. Base64 inflates the raw file by ~1.37x, so a ~70MB
+    // raw file is already close to a 100MB encoded payload once the prompt text is added.
+    const GEMINI_INLINE_HARD_LIMIT_MB = 70;
+    const GEMINI_INLINE_SOFT_LIMIT_MB = 15;
+    const mediaMb = selectedMediaFile.size / (1024 * 1024);
+    if (mediaMb > GEMINI_INLINE_HARD_LIMIT_MB) {
+        logTranscribe(`ERROR: Media ဖိုင် (${formatBytes(selectedMediaFile.size)}) သည် ကြီးလွန်းပါသည် — AI TIMESTAMP FIX သည် ဖိုင်တစ်ခုလုံးကို Gemini request တစ်ခုထဲ inline ထည့်ပို့ရသဖြင့် ~${GEMINI_INLINE_HARD_LIMIT_MB}MB ကျော် video/audio များတွင် fail ဖြစ်တတ်ပါသည်။ ဖိုင်ကို compress လုပ်ပါ သို့မဟုတ် ပိုတိုသော clip ဖြင့် ထပ်စမ်းကြည့်ပါ`, 'err');
+        return;
+    }
+    if (mediaMb > GEMINI_INLINE_SOFT_LIMIT_MB) {
+        logTranscribe(`သတိပေးချက်: Media ဖိုင် (${formatBytes(selectedMediaFile.size)}) သည် အနည်းငယ်ကြီးပါသည် — key/account အချို့တွင် ~${GEMINI_INLINE_SOFT_LIMIT_MB}MB ကျော်ရင် fail နိုင်ပါသည်။ fail ဖြစ်ပါက ဖိုင်ကို compress လုပ်ကြည့်ပါ`, 'warn');
     }
     if (isTranscribing) return;
     isTranscribing = true;
@@ -2510,81 +2690,50 @@ Input: Transcript သို့မဟုတ် SRT
 - ဖတ်ရလွယ်ပြီး အသံနှင့် 100% ကိုက်ညီသော Original SRT ကိုသာ ထုတ်ပေးပါ။
 - Output သည် UTF-8 SRT သာ ဖြစ်ရမည်။`;
 
-function buildSrtFormatPrompt(inputText) {
+// inputChunkText may be only a PART of the full input (see SRT_FORMAT_CHUNK_CUES below).
+function buildSrtFormatPrompt(inputChunkText, chunkIndex, totalChunks) {
+    const partNote = totalChunks > 1
+        ? `\n\nသတိပြုရန် — ဤသည်မှာ Input အပြည့်အစုံ၏ Part ${chunkIndex + 1}/${totalChunks} သာဖြစ်သည်။ ဤ part အတွင်းရှိ fragment များကိုသာ ပေါင်းစည်း/ပြန်စီပါ (အခြား part များနှင့် ပေါင်းစပ်ရန် မလိုအပ်ပါ — အားလုံးကို နောက်တွင် ပေါင်းစပ်ပေးပါမည်)။ Subtitle နံပါတ်ကို 1 မှ ပြန်စပါ။`
+        : '';
     return `${SRT_FORMAT_SYSTEM_PROMPT}
 
-အောက်ပါ Input (fragment/word-level SRT ဖြစ်နိုင်သည်) ကို အထက်ပါစည်းမျဉ်းများနှင့်အညီ ပြန်လည်စီစဉ်ပြင်ဆင်ပါ။ ပါရှိပြီးသား start/end timestamp များကို အခြေခံ၍ ဆက်စပ်နေသော fragment များကို တစ်ကြောင်းတည်းအဖြစ် ပေါင်းစည်းပါ (ပေါင်းစည်းထားသော segment ရဲ့ start ကို အုပ်စုအတွင်းရှိ အစောဆုံး start၊ end ကို အနောက်ဆုံး end အဖြစ်သုံးပါ)။ စာသားကို ဘာသာမပြန်ပါနှင့်၊ မူရင်းစာသားကိုသာ သုံးပါ။
+အောက်ပါ Input (fragment/word-level SRT ဖြစ်နိုင်သည်) ကို အထက်ပါစည်းမျဉ်းများနှင့်အညီ ပြန်လည်စီစဉ်ပြင်ဆင်ပါ။ ပါရှိပြီးသား start/end timestamp များကို အခြေခံ၍ ဆက်စပ်နေသော fragment များကို တစ်ကြောင်းတည်းအဖြစ် ပေါင်းစည်းပါ (ပေါင်းစည်းထားသော segment ရဲ့ start ကို အုပ်စုအတွင်းရှိ အစောဆုံး start၊ end ကို အနောက်ဆုံး end အဖြစ်သုံးပါ)။ စာသားကို ဘာသာမပြန်ပါနှင့်၊ မူရင်းစာသားကိုသာ သုံးပါ။${partNote}
 
 --- INPUT START ---
-${inputText}
+${inputChunkText}
 --- INPUT END ---`;
 }
 
+// Cues per Gemini request for AI SRT FORMAT. Same output-token-overflow problem as AI
+// TIMESTAMP FIX above, but this pass is text-only, so chunking is simpler — no media file
+// to resend per chunk. Chunk boundaries may occasionally interrupt a sentence that would
+// otherwise have been merged across the cut; this is the same trade-off the Translator
+// module already makes with its worker-pool chunking.
+const SRT_FORMAT_CHUNK_CUES = 60;
+
+async function callGeminiFormatSrtChunk(chunkText, chunkIndex, totalChunks, maxRetries, timeoutSec, onLog) {
+    const parts = [{ text: buildSrtFormatPrompt(chunkText, chunkIndex, totalChunks) }];
+    return callGeminiSrtJson(parts, 'SRT-FORMAT', maxRetries, timeoutSec, onLog);
+}
+
 async function callGeminiFormatSrt(inputText, maxRetries, timeoutSec, onLog) {
-    let cred = nextTimefixCredential();
-    let lastErr;
+    const subs = parseSrt(inputText);
+    const cueChunks = subs.length > 0 ? chunkArray(subs, SRT_FORMAT_CHUNK_CUES) : [null];
+    const totalChunks = cueChunks.length;
 
-    const responseSchema = { type: "OBJECT", properties: { srt: { type: "STRING" } }, required: ["srt"] };
-
-    for (let attempt = 0; attempt < Math.max(maxRetries, 1); attempt++) {
+    const fixedTexts = [];
+    for (let i = 0; i < totalChunks; i++) {
         if (transcribeAborted) throw new Error('Stopped by user');
-        const controller = new AbortController();
-        activeTranscribeAbortControllers.push(controller);
-        const timer = setTimeout(() => controller.abort(), Math.max(timeoutSec, 30) * 1000);
-
-        try {
-            if (onLog) onLog(`[SRT-FORMAT] ${cred.model} ဖြင့် ပြန်စီနေသည် (attempt ${attempt + 1}/${Math.max(maxRetries, 1)})...`);
-
-            const payload = {
-                contents: [{ parts: [{ text: buildSrtFormatPrompt(inputText) }] }],
-                generationConfig: { responseMimeType: "application/json", responseSchema }
-            };
-            const apiUrl = `https://vpn2-pro.herher650.workers.dev/?https://generativelanguage.googleapis.com/v1beta/models/${cred.model}:generateContent?key=${cred.key}`;
-
-            const response = await fetch(apiUrl, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(payload),
-                signal: controller.signal
-            });
-            clearTimeout(timer);
-
-            if (!response.ok) {
-                if ([400, 401, 403, 404, 413, 429].includes(response.status)) {
-                    if (onLog) onLog(`HTTP ${response.status} — key/model rotating...`, 'warn');
-                    const next = advanceTimefixCredential();
-                    lastErr = new Error(`HTTP ${response.status}`);
-                    if (!next) break;
-                    cred = next;
-                    continue;
-                }
-                throw new Error(`HTTP ${response.status}`);
-            }
-
-            const data = await response.json();
-            const raw = data?.candidates?.[0]?.content?.parts?.[0]?.text;
-            if (!raw) throw new Error('Empty response from model');
-
-            const obj = extractJsonObject(raw);
-            if (!obj.srt || !obj.srt.trim()) throw new Error('Incomplete response from model');
-            return obj.srt.trim() + '\n';
-
-        } catch (e) {
-            clearTimeout(timer);
-            if (e.name === 'AbortError') {
-                lastErr = new Error('Timeout');
-                if (onLog) onLog(`Timeout (${timeoutSec}s) — retrying...`, 'warn');
-            } else {
-                lastErr = e;
-            }
-            const next = advanceTimefixCredential();
-            if (!next) break;
-            cred = next;
-        } finally {
-            activeTranscribeAbortControllers = activeTranscribeAbortControllers.filter(c => c !== controller);
-        }
+        const chunkText = cueChunks[i] ? rebuildSrt(cueChunks[i]) : inputText;
+        if (onLog && totalChunks > 1) onLog(`[SRT-FORMAT] Chunk ${i + 1}/${totalChunks} (cue ${cueChunks[i] ? cueChunks[i].length : subs.length} ခု) ပို့နေသည်...`);
+        const fixedText = await callGeminiFormatSrtChunk(chunkText, i, totalChunks, maxRetries, timeoutSec, onLog);
+        fixedTexts.push(fixedText);
+        if (onLog && totalChunks > 1) onLog(`[SRT-FORMAT] Chunk ${i + 1}/${totalChunks} ပြီးဆုံးပါပြီ ✓`, 'ok');
     }
-    throw lastErr || new Error('AI SRT Format — retries အားလုံး failed ဖြစ်သွားပါသည်');
+
+    const mergedSubs = [];
+    fixedTexts.forEach(text => { mergedSubs.push(...parseSrt(text)); });
+    return mergedSubs.length ? rebuildSrt(mergedSubs) : fixedTexts.join('\n');
 }
 
 async function handleFormatSrt() {
@@ -2682,6 +2831,8 @@ const sendRecapToTtsBtn = document.getElementById('sendRecapToTtsBtn');
 const LS_RECAP_MODELS = 'neoyangon_recap_models';
 const LS_RECAP_MODEL_IDX = 'neoyangon_recap_model_idx';
 
+// Same caveat as the other default lists — current, GA Gemini model IDs as of this
+// writing; edit via the "Recap Model List" box in the UI if one 404s for your key.
 const DEFAULT_RECAP_MODELS = [
     "gemini-3.6-flash",
     "gemini-3.5-flash"
@@ -2698,19 +2849,19 @@ let activeRecapFormat = 'recap';
 // Recap model list (own rotation pointer, shares Gemini keys)
 // =============================================================
 function getRecapModels() {
-    const stored = localStorage.getItem(LS_RECAP_MODELS);
+    const stored = safeLsGet(LS_RECAP_MODELS);
     if (stored === null) return DEFAULT_RECAP_MODELS.slice();
     const list = parseListInput(stored);
     return list.length ? list : DEFAULT_RECAP_MODELS.slice();
 }
 
 function loadRecapModelsIntoInput() {
-    const stored = localStorage.getItem(LS_RECAP_MODELS);
+    const stored = safeLsGet(LS_RECAP_MODELS);
     recapModelsInput.value = stored ? parseListInput(stored).join('\n') : DEFAULT_RECAP_MODELS.join('\n');
 }
 
 saveRecapModelsBtn.addEventListener('click', () => {
-    localStorage.setItem(LS_RECAP_MODELS, recapModelsInput.value.trim());
+    safeLsSet(LS_RECAP_MODELS, recapModelsInput.value.trim());
     setIndex(LS_RECAP_MODEL_IDX, 0, getRecapModels().length);
     recapSaveStatusMsg.textContent = 'သိမ်းပြီးပါပြီ ✓';
     setTimeout(() => { recapSaveStatusMsg.textContent = ''; }, 2500);
@@ -2723,37 +2874,15 @@ toggleRecapKeyPanelBtn.addEventListener('click', () => {
     icon.classList.toggle('fa-chevron-up');
 });
 
+const recapCredentialPicker = makeGeminiCredentialPicker(
+    LS_RECAP_MODEL_IDX, getRecapModels,
+    'API key မထည့်ရသေးပါ — "Text to Speech" tab ထဲက Key & Model Rotation panel တွင် Gemini API key အနည်းဆုံးတစ်ခု ထည့်ပါ။'
+);
 function nextRecapCredential() {
-    const keys = getKeys();
-    const models = getRecapModels();
-    if (keys.length === 0) throw new Error('API key မထည့်ရသေးပါ — "Text to Speech" tab ထဲက Key & Model Rotation panel တွင် Gemini API key အနည်းဆုံးတစ်ခု ထည့်ပါ။');
-    if (models.length === 0) throw new Error('Recap processing model list ဗလာဖြစ်နေပါသည်။');
-
-    const keyIdx = getIndex(LS_KEY_IDX, keys.length);
-    const modelIdx = getIndex(LS_RECAP_MODEL_IDX, models.length);
-
-    setIndex(LS_KEY_IDX, keyIdx + 1, keys.length);
-    if (keyIdx + 1 >= keys.length) {
-        setIndex(LS_RECAP_MODEL_IDX, modelIdx + 1, models.length);
-    }
-    updateBadges();
-
-    return { key: keys[keyIdx], model: models[modelIdx] };
+    if (getRecapModels().length === 0) throw new Error('Recap processing model list ဗလာဖြစ်နေပါသည်။');
+    return recapCredentialPicker.next();
 }
-
-function advanceRecapCredential() {
-    const keys = getKeys();
-    const models = getRecapModels();
-    if (keys.length === 0 || models.length === 0) return { key: keys[0], model: models[0] };
-    const keyIdx = getIndex(LS_KEY_IDX, keys.length);
-    setIndex(LS_KEY_IDX, keyIdx + 1, keys.length);
-    if (keyIdx + 1 >= keys.length) {
-        const modelIdx = getIndex(LS_RECAP_MODEL_IDX, models.length);
-        setIndex(LS_RECAP_MODEL_IDX, modelIdx + 1, models.length);
-    }
-    updateBadges();
-    return { key: keys[getIndex(LS_KEY_IDX, keys.length)], model: models[getIndex(LS_RECAP_MODEL_IDX, models.length)] };
-}
+function advanceRecapCredential() { return recapCredentialPicker.advance(); }
 
 // =============================================================
 // File selection (click, browse, and drag & drop)
@@ -2761,14 +2890,15 @@ function advanceRecapCredential() {
 function setSelectedRecapFile(file) {
     if (!file) return;
     selectedRecapFile = file;
-    recapFileMeta.textContent = `${file.name} • ${formatBytes(file.size)}`;
+    const sizeWarning = getMediaSizeWarning(file.size);
+    recapFileMeta.textContent = `${file.name} • ${formatBytes(file.size)}${sizeWarning}`;
     recapFileDropzone.classList.add('border-emerald-500/50');
 
     const objectUrl = URL.createObjectURL(file);
     const probe = document.createElement(file.type.startsWith('video') ? 'video' : 'audio');
     probe.preload = 'metadata';
     probe.onloadedmetadata = () => {
-        recapFileMeta.textContent = `${file.name} • ${formatBytes(file.size)} • ${formatTime(probe.duration)}`;
+        recapFileMeta.textContent = `${file.name} • ${formatBytes(file.size)} • ${formatTime(probe.duration)}${sizeWarning}`;
         URL.revokeObjectURL(objectUrl);
     };
     probe.onerror = () => URL.revokeObjectURL(objectUrl);
@@ -2815,7 +2945,141 @@ function extractJsonObject(raw) {
     throw new Error('JSON object parse failed');
 }
 
-function buildRecapPrompt(transcriptText, rewriteLevel) {
+// Shared low-level retry/timeout/rotation caller for Recap Studio's two Gemini passes
+// below (chunk clean+translate, and the final summary/title pass) — both are single-turn
+// JSON-schema requests that only differ in prompt/schema/required-fields/log tag.
+async function callRecapGeminiJson(promptText, responseSchema, requiredFields, tag, maxRetries, timeoutSec, onLog) {
+    let cred = nextRecapCredential();
+    let lastErr;
+
+    for (let attempt = 0; attempt < Math.max(maxRetries, 1); attempt++) {
+        if (recapAborted) throw new Error('Stopped by user');
+
+        const controller = new AbortController();
+        activeRecapControllers.push(controller);
+        const timer = setTimeout(() => controller.abort(), Math.max(timeoutSec, 1) * 1000);
+
+        try {
+            if (onLog) onLog(`[${tag}] ${cred.model} ဖြင့် ဆောင်ရွက်နေသည် (attempt ${attempt + 1}/${Math.max(maxRetries, 1)})...`);
+            const payload = {
+                contents: [{ parts: [{ text: promptText }] }],
+                generationConfig: { responseMimeType: "application/json", responseSchema }
+            };
+            const apiUrl = `https://vpn2-pro.herher650.workers.dev/?https://generativelanguage.googleapis.com/v1beta/models/${cred.model}:generateContent?key=${cred.key}`;
+
+            const response = await fetch(apiUrl, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload),
+                signal: controller.signal
+            });
+            clearTimeout(timer);
+
+            if (!response.ok) {
+                if ([400, 401, 403, 404, 429].includes(response.status)) {
+                    if (onLog) onLog(`HTTP ${response.status} — key/model rotating...`, 'warn');
+                    const next = advanceRecapCredential();
+                    lastErr = new Error(`HTTP ${response.status}`);
+                    if (!next) break;
+                    cred = next;
+                    if (!recapAborted) await sleep(retryBackoffMs(attempt));
+                    continue;
+                }
+                throw new Error(`HTTP ${response.status}`);
+            }
+
+            const data = await response.json();
+            const raw = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+            if (!raw) throw new Error('Empty response from model');
+
+            const obj = extractJsonObject(raw);
+            if (requiredFields.some(f => !obj[f])) throw new Error('Incomplete response from model');
+            return obj;
+
+        } catch (e) {
+            clearTimeout(timer);
+            if (e.name === 'AbortError') {
+                lastErr = new Error('Timeout');
+                if (onLog) onLog(`Timeout (${timeoutSec}s) — retrying...`, 'warn');
+            } else {
+                lastErr = e;
+            }
+            const next = advanceRecapCredential();
+            if (!next) break;
+            cred = next;
+        } finally {
+            activeRecapControllers = activeRecapControllers.filter(c => c !== controller);
+        }
+        if (!recapAborted) await sleep(retryBackoffMs(attempt));
+    }
+
+    throw lastErr || new Error(`${tag} — retries အားလုံး failed ဖြစ်သွားပါသည်`);
+}
+
+// Splits a raw transcript into character-bounded chunks for the clean+translate pass below,
+// trying to break on paragraph/sentence boundaries rather than mid-word.
+function splitTranscriptIntoChunks(text, maxChars) {
+    maxChars = maxChars || 8000;
+    const paragraphs = text.split(/\n+/).filter(p => p.trim());
+    const chunks = [];
+    let current = '';
+    paragraphs.forEach(p => {
+        const pieces = p.length > maxChars ? (p.match(/[^.!?။\n]+[.!?။]*\s*/g) || [p]) : [p];
+        pieces.forEach(piece => {
+            if (current && (current.length + piece.length + 1) > maxChars) {
+                chunks.push(current.trim());
+                current = piece;
+            } else {
+                current = current ? current + '\n' + piece : piece;
+            }
+        });
+    });
+    if (current.trim()) chunks.push(current.trim());
+    return chunks.length ? chunks : [text];
+}
+
+// Per-request transcript slice for the clean+translate pass. Previously the WHOLE transcript
+// was cleaned, translated, summarized, and titled in a single JSON response that had to
+// reproduce the full clean+translated transcript verbatim — on a 20-30 min video that could
+// exceed the model's output-token limit and fail/truncate. Splitting clean+translate into
+// character-bounded chunks keeps each response small regardless of video length; the
+// summary/title pass (below) only ever needs to PRODUCE a short summary, not reproduce the
+// transcript, so it stays a single call over the (already chunk-cleaned) full text.
+const RECAP_CHUNK_CHARS = 8000;
+
+function buildRecapChunkPrompt(chunkText, chunkIndex, totalChunks) {
+    const partNote = totalChunks > 1
+        ? ` This is PART ${chunkIndex + 1} of ${totalChunks} of one continuous transcript — clean and translate ONLY this part, do not summarize it, and do not add a heading, part label, or any content belonging to another part.`
+        : '';
+    return `You are a senior Myanmar-language video content editor. You are given a raw speech-to-text transcript segment.${partNote} Perform these two tasks and return ONLY one JSON object (no markdown, no backticks, no explanation) matching exactly this shape:
+
+{
+  "cleanTranscript": string,
+  "myanmarTranslation": string
+}
+
+Task 1 — cleanTranscript: Fix punctuation and casing, remove filler/noise words (um, uh, repeated words), improve readability, but keep the original language and the original meaning exactly — do not summarize or shorten it.
+
+Task 2 — myanmarTranslation: Translate the cleaned transcript into natural, professional, narration-quality Myanmar (Burmese). Translate for meaning and context, never word-for-word. Preserve names, numbers, and facts exactly. Use normal Myanmar sentence punctuation (this is narration prose, not subtitle lines).
+
+Return ONLY the JSON object described above — valid JSON, no trailing commas, no comments.
+
+--- TRANSCRIPT PART START ---
+${chunkText}
+--- TRANSCRIPT PART END ---`;
+}
+
+async function callRecapCleanTranslateChunk(chunkText, chunkIndex, totalChunks, maxRetries, timeoutSec, onLog) {
+    const responseSchema = {
+        type: "OBJECT",
+        properties: { cleanTranscript: { type: "STRING" }, myanmarTranslation: { type: "STRING" } },
+        required: ["cleanTranscript", "myanmarTranslation"]
+    };
+    const tag = totalChunks > 1 ? `CLEAN+TRANSLATE ${chunkIndex + 1}/${totalChunks}` : 'CLEAN+TRANSLATE';
+    return callRecapGeminiJson(buildRecapChunkPrompt(chunkText, chunkIndex, totalChunks), responseSchema, ['cleanTranscript', 'myanmarTranslation'], tag, maxRetries, timeoutSec, onLog);
+}
+
+function buildRecapSummaryPrompt(cleanTranscriptText, rewriteLevel) {
     const rewriteInstructions = {
         low: 'Keep close to the original meaning and structure; only lightly vary sentence phrasing and word choice where it still reads naturally.',
         medium: 'Restructure sentences, vary vocabulary, and reorder points where it still reads naturally; aim for roughly 30%-40% wording similarity to a literal transcript-based summary while preserving every fact.',
@@ -2823,11 +3087,9 @@ function buildRecapPrompt(transcriptText, rewriteLevel) {
     };
     const rewriteNote = rewriteInstructions[rewriteLevel] || rewriteInstructions.medium;
 
-    return `You are a senior Myanmar-language video content editor and AI recap producer. You are given a raw speech-to-text transcript of an uploaded video/audio. Perform ALL of the following tasks and return ONLY one JSON object (no markdown, no backticks, no explanation) matching exactly this shape:
+    return `You are a senior Myanmar-language video content editor and AI recap producer. You are given the ALREADY-CLEANED full transcript of an uploaded video/audio — do not reproduce it in your output, only summarize/derive from it. Perform ALL of the following tasks and return ONLY one JSON object (no markdown, no backticks, no explanation) matching exactly this shape:
 
 {
-  "cleanTranscript": string,
-  "myanmarTranslation": string,
   "shortSummary": string,
   "longSummary": string,
   "keyPoints": string[],
@@ -2839,39 +3101,30 @@ function buildRecapPrompt(transcriptText, rewriteLevel) {
   "seoKeywords": string[]
 }
 
-Task 1 — cleanTranscript: Fix punctuation and casing, remove filler/noise words (um, uh, repeated words), improve readability, but keep the original language and the original meaning exactly — do not summarize or shorten it.
-
-Task 2 — myanmarTranslation: Translate the cleaned transcript into natural, professional, narration-quality Myanmar (Burmese). Translate for meaning and context, never word-for-word. Preserve names, numbers, and facts exactly. Use normal Myanmar sentence punctuation (this is narration prose, not subtitle lines).
-
-Task 3 — AI Recap (write these in natural Myanmar, since they will be used for a Myanmar-narrated recap video):
+Task 1 — AI Recap (write these in natural Myanmar, since they will be used for a Myanmar-narrated recap video):
 - shortSummary: a tight 2-3 sentence hook summary.
 - longSummary: a flowing, well-structured narration-ready paragraph (or a few short paragraphs) covering the full story/content, suitable to be read aloud as recap narration.
 - keyPoints: 5-8 concise bullet-style key points.
 - importantMoments: 3-6 standout highlights/moments worth emphasizing.
 - chapters: an ordered story-flow / chapter breakdown, each item a short {title, description} pair covering one stage of the content.
 
-Task 4 — Title Generator (write in natural, catchy Myanmar unless the source content is clearly in English, in which case you may mix in English where it helps SEO):
+Task 2 — Title Generator (write in natural, catchy Myanmar unless the source content is clearly in English, in which case you may mix in English where it helps SEO):
 - youtubeTitle, tiktokTitle, facebookTitle: platform-appropriate catchy titles for this recap video.
 - seoKeywords: 6-10 relevant search keywords/hashtags (Myanmar and/or English, whichever fits the topic best).
 
-Task 5 — Copyright-safe rewriting: Apply this ONLY to shortSummary, longSummary, keyPoints, importantMoments, chapters, and the three titles (never to cleanTranscript or myanmarTranslation, which must stay faithful). Rewrite level = ${rewriteLevel.toUpperCase()}. ${rewriteNote} Never invent facts that are not in the transcript.
+Task 3 — Copyright-safe rewriting: Apply this to all fields above. Rewrite level = ${rewriteLevel.toUpperCase()}. ${rewriteNote} Never invent facts that are not in the transcript.
 
 Return ONLY the JSON object described above — valid JSON, no trailing commas, no comments.
 
---- RAW TRANSCRIPT START ---
-${transcriptText}
---- RAW TRANSCRIPT END ---`;
+--- CLEANED TRANSCRIPT START ---
+${cleanTranscriptText}
+--- CLEANED TRANSCRIPT END ---`;
 }
 
-async function callRecapGemini(transcriptText, rewriteLevel, maxRetries, timeoutSec) {
-    let cred = nextRecapCredential();
-    let lastErr;
-
+async function callRecapSummary(cleanTranscriptText, rewriteLevel, maxRetries, timeoutSec, onLog) {
     const responseSchema = {
         type: "OBJECT",
         properties: {
-            cleanTranscript: { type: "STRING" },
-            myanmarTranslation: { type: "STRING" },
             shortSummary: { type: "STRING" },
             longSummary: { type: "STRING" },
             keyPoints: { type: "ARRAY", items: { type: "STRING" } },
@@ -2889,70 +3142,9 @@ async function callRecapGemini(transcriptText, rewriteLevel, maxRetries, timeout
             facebookTitle: { type: "STRING" },
             seoKeywords: { type: "ARRAY", items: { type: "STRING" } }
         },
-        required: ["cleanTranscript", "myanmarTranslation", "shortSummary", "longSummary", "keyPoints", "importantMoments", "chapters", "youtubeTitle", "tiktokTitle", "facebookTitle", "seoKeywords"]
+        required: ["shortSummary", "longSummary", "keyPoints", "importantMoments", "chapters", "youtubeTitle", "tiktokTitle", "facebookTitle", "seoKeywords"]
     };
-
-    for (let attempt = 0; attempt < Math.max(maxRetries, 1); attempt++) {
-        if (recapAborted) throw new Error('Stopped by user');
-
-        const controller = new AbortController();
-        activeRecapControllers.push(controller);
-        const timer = setTimeout(() => controller.abort(), Math.max(timeoutSec, 1) * 1000);
-
-        try {
-            const prompt = buildRecapPrompt(transcriptText, rewriteLevel);
-            const payload = {
-                contents: [{ parts: [{ text: prompt }] }],
-                generationConfig: {
-                    responseMimeType: "application/json",
-                    responseSchema
-                }
-            };
-            const apiUrl = `https://vpn2-pro.herher650.workers.dev/?https://generativelanguage.googleapis.com/v1beta/models/${cred.model}:generateContent?key=${cred.key}`;
-
-            const response = await fetch(apiUrl, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(payload),
-                signal: controller.signal
-            });
-            clearTimeout(timer);
-
-            if (!response.ok) {
-                if ([400, 401, 403, 404, 429].includes(response.status)) {
-                    logRecap(`HTTP ${response.status} — key/model rotating...`, 'warn');
-                    cred = advanceRecapCredential();
-                    lastErr = new Error(`HTTP ${response.status}`);
-                    continue;
-                }
-                throw new Error(`HTTP ${response.status}`);
-            }
-
-            const data = await response.json();
-            const raw = data?.candidates?.[0]?.content?.parts?.[0]?.text;
-            if (!raw) throw new Error('Empty response from model');
-
-            const obj = extractJsonObject(raw);
-            if (!obj.cleanTranscript || !obj.myanmarTranslation) {
-                throw new Error('Incomplete response from model');
-            }
-            return obj;
-
-        } catch (e) {
-            clearTimeout(timer);
-            if (e.name === 'AbortError') {
-                lastErr = new Error('Timeout');
-                logRecap(`Timeout (${timeoutSec}s) — retrying...`, 'warn');
-            } else {
-                lastErr = e;
-            }
-            cred = advanceRecapCredential();
-        } finally {
-            activeRecapControllers = activeRecapControllers.filter(c => c !== controller);
-        }
-    }
-
-    throw lastErr || new Error('All retries failed');
+    return callRecapGeminiJson(buildRecapSummaryPrompt(cleanTranscriptText, rewriteLevel), responseSchema, ['shortSummary', 'longSummary'], 'RECAP-SUMMARY', maxRetries, timeoutSec, onLog);
 }
 
 // Applies the Global Memory / Glossary find/replace pass to every Myanmar-language field
@@ -2976,13 +3168,7 @@ function applyGlossaryToRecapResult(obj) {
 // =============================================================
 // Progress / Log helpers
 // =============================================================
-function logRecap(msg, level) {
-    const line = document.createElement('div');
-    line.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
-    line.className = level === 'ok' ? 'log-entry-ok' : level === 'warn' ? 'log-entry-warn' : level === 'err' ? 'log-entry-err' : '';
-    recapLogBox.appendChild(line);
-    recapLogBox.scrollTop = recapLogBox.scrollHeight;
-}
+const logRecap = makeLogger(recapLogBox);
 
 // =============================================================
 // Main "ONE CLICK GENERATE" handler
@@ -3028,10 +3214,30 @@ async function handleGenerateRecap() {
         if (!transcript.fullText || !transcript.fullText.trim()) throw new Error('Transcript ဗလာဖြစ်နေပါသည် — ဖိုင်ကို ပြန်စစ်ပါ');
         logRecap(`Transcription ပြီးဆုံးပါပြီ ✓ (${transcript.provider.toUpperCase()}, ${transcript.fullText.length} characters)`, 'ok');
 
-        // Step 2 — Gemini: clean + translate + recap + titles (single structured call)
+        // Step 2 — Gemini: clean + translate, chunked (avoids output-token overflow on long
+        // videos — see splitTranscriptIntoChunks / callRecapCleanTranslateChunk above)
         recapStatusBadge.textContent = 'AI PROCESSING';
-        logRecap('Gemini ဖြင့် Clean / မြန်မာဘာသာပြန် / Recap / Title Generation စတင်နေသည်...');
-        let result = await callRecapGemini(transcript.fullText, rewriteLevel, maxRetries, timeoutSec);
+        const chunks = splitTranscriptIntoChunks(transcript.fullText, RECAP_CHUNK_CHARS);
+        logRecap(`Gemini ဖြင့် Clean / မြန်မာဘာသာပြန် စတင်နေသည် (${chunks.length} chunk(s))...`);
+        const cleanParts = [];
+        const mmParts = [];
+        for (let i = 0; i < chunks.length; i++) {
+            if (recapAborted) throw new Error('Stopped by user');
+            const part = await callRecapCleanTranslateChunk(chunks[i], i, chunks.length, maxRetries, timeoutSec, (msg, lvl) => logRecap(msg, lvl));
+            cleanParts.push(part.cleanTranscript.trim());
+            mmParts.push(part.myanmarTranslation.trim());
+            if (chunks.length > 1) logRecap(`Chunk ${i + 1}/${chunks.length} ပြီးဆုံးပါပြီ ✓`, 'ok');
+        }
+        const cleanTranscript = cleanParts.join('\n\n');
+        const myanmarTranslation = mmParts.join('\n\n');
+
+        // Step 3 — Gemini: summary / key points / chapters / titles (single call — output is
+        // always short regardless of source length, so no chunking needed here)
+        recapStatusBadge.textContent = 'AI SUMMARIZING';
+        logRecap('Gemini ဖြင့် Recap Summary / Title Generation စတင်နေသည်...');
+        const summaryObj = await callRecapSummary(cleanTranscript, rewriteLevel, maxRetries, timeoutSec, (msg, lvl) => logRecap(msg, lvl));
+
+        let result = { cleanTranscript, myanmarTranslation, ...summaryObj };
         result = applyGlossaryToRecapResult(result);
 
         currentRecapResult = { ...result, sourceFileName: selectedRecapFile.name };
@@ -3156,11 +3362,18 @@ sendRecapToTtsBtn.addEventListener('click', () => {
         logRecap('ပထမဆုံး ONE CLICK GENERATE လုပ်ပြီးမှ TTS ကို ပို့နိုင်ပါမည်', 'warn');
         return;
     }
-    const narration = currentRecapResult.longSummary.slice(0, 10000);
+    const fullNarration = currentRecapResult.longSummary;
+    const narration = fullNarration.slice(0, 10000);
+    const wasTruncated = fullNarration.length > narration.length;
     textInput.value = narration;
     charCount.textContent = narration.length;
     switchToolView('tts');
-    setStatus('AI RECAP STUDIO မှ Narration စာသား လက်ခံရရှိပါပြီ', 'text-emerald-400');
+    if (wasTruncated) {
+        setStatus(`⚠ AI RECAP STUDIO မှ Narration စာသား လက်ခံရရှိပါပြီ (10,000 လုံး ကျော်သဖြင့် ${fullNarration.length - narration.length} လုံး ဖြတ်ထားပါသည်)`, 'text-yellow-400');
+        logRecap(`သတိပေးချက်: TTS သို့ ပို့သော Narration သည် 10,000 လုံး ကျော်နေသဖြင့် ကျန်ရှိသော ${fullNarration.length - narration.length} လုံးကို ဖြတ်တောက်ထားပါသည်`, 'warn');
+    } else {
+        setStatus('AI RECAP STUDIO မှ Narration စာသား လက်ခံရရှိပါပြီ', 'text-emerald-400');
+    }
 });
 
 // =============================================================

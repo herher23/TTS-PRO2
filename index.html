@@ -193,7 +193,7 @@
                 </div>
 
                 <!-- Quick Action Buttons -->
-                <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
                     <button id="clearBtn" class="px-4 py-3 rounded-lg bg-black/40 hover:bg-red-950/50 border border-red-500/30 text-red-300 font-mono text-sm tracking-wider flex items-center justify-center gap-2 transition-all hover:border-red-400">
                         <i class="fa-solid fa-trash-can"></i>
                         <span>စာသားရှင်းထုတ်မည် (CLEAR)</span>
@@ -202,6 +202,11 @@
                     <button id="generateBtn" class="px-6 py-3 rounded-lg bg-gradient-to-r from-pink-600 via-purple-600 to-cyan-600 hover:from-pink-500 hover:to-cyan-500 text-white font-orbitron font-bold text-sm tracking-widest shadow-[0_0_20px_rgba(255,0,85,0.4)] hover:shadow-[0_0_30px_rgba(0,243,255,0.6)] flex items-center justify-center gap-3 transition-all transform hover:-translate-y-0.5">
                         <i class="fa-solid fa-bolt text-yellow-300 text-base animate-bounce"></i>
                         <span>အသံထုတ်လုပ်မည် (SYNTHESIZE)</span>
+                    </button>
+
+                    <button id="stopGenerateBtn" disabled class="px-4 py-3 rounded-lg bg-black/40 hover:bg-yellow-950/50 border border-yellow-500/30 text-yellow-300 font-mono text-sm tracking-wider flex items-center justify-center gap-2 transition-all disabled:opacity-40">
+                        <i class="fa-solid fa-stop"></i>
+                        <span>ရပ်တန့် (STOP)</span>
                     </button>
                 </div>
             </div>
@@ -696,6 +701,24 @@
                         <span class="font-mono text-[10px] px-2 py-1 rounded bg-black/50 border border-cyan-500/30 text-cyan-300">GLADIA: <strong id="gladiaKeyCountBadge" class="text-white">0</strong></span>
                         <span class="font-mono text-[10px] px-2 py-1 rounded bg-black/50 border border-pink-500/30 text-pink-300">GROQ: <strong id="groqKeyCountBadge" class="text-white">0</strong></span>
                         <span class="font-mono text-[10px] px-2 py-1 rounded bg-black/50 border border-emerald-500/30 text-emerald-300">ASSEMBLYAI: <strong id="assemblyaiKeyCountBadge" class="text-white">0</strong></span>
+                    </div>
+
+                    <div class="pt-3 border-t border-purple-500/20">
+                        <label class="block font-mono text-xs text-purple-300 uppercase tracking-widest mb-2 font-semibold">
+                            Gemini Model List — AI TIMESTAMP FIX / AI SRT FORMAT (တစ်ကြောင်းလျှင် တစ်ခု)
+                        </label>
+                        <textarea id="timefixModelsInput" rows="2" placeholder="gemini-3.6-flash&#10;gemini-3.5-flash"
+                            class="w-full p-3 rounded-lg bg-black/60 border border-purple-500/30 text-purple-200 placeholder-purple-800/60 font-mono text-xs focus:outline-none focus:border-orange-500/80 resize-y"></textarea>
+                        <p class="font-mono text-[10px] text-cyan-500/60 mt-2">
+                            <i class="fa-solid fa-circle-info mr-1"></i>
+                            "Text to Speech" tab ရဲ့ Gemini API key pool ကိုပဲ ပြန်သုံးပါမည် — ဒီနေရာမှာ model list ကိုသာ သီးခြား ပြင်ပါ။
+                        </p>
+                        <div class="flex flex-wrap items-center gap-3 mt-2">
+                            <button id="saveTimefixModelsBtn" class="px-4 py-2 rounded-lg bg-purple-600 hover:bg-purple-500 text-black font-orbitron font-bold text-xs tracking-widest transition-all">
+                                <i class="fa-solid fa-floppy-disk mr-1"></i> SAVE MODELS
+                            </button>
+                            <span id="timefixSaveStatusMsg" class="font-mono text-xs text-purple-400"></span>
+                        </div>
                     </div>
                 </div>
             </div>
