@@ -11,18 +11,7 @@ runs the whole pipeline in one click.
    key across all three providers. Outputs three formats you can copy or download — a
    ready-made `.srt`, a plain `transcript.txt`, and the raw `result.json` from whichever
    provider handled the job. A "Send to Translator" button hands the generated SRT straight
-   to tool #2. Three Gemini-powered follow-up tools live in this tab as well:
-   - **AI Transcribe (Gemini)** — generates the *original* SRT directly from the raw media
-     using only the Gemini key pool, with no Gladia/Groq/AssemblyAI key required. The audio
-     track is decoded and chunked entirely in the browser via the Web Audio API (still no
-     ffmpeg): each **Chunk Size**-second slice is downsampled to a small 16kHz-mono WAV and
-     sent to Gemini in parallel across a configurable number of **Workers** (same worker-pool
-     pattern as the SRT Translator tab below); each chunk's returned timestamps are then
-     offset back onto the full timeline and merged. Because every request only carries one
-     small time-slice (not the whole file), this scales to long media without hitting
-     per-request size limits — the trade-off is that a sentence spoken right across a chunk
-     boundary can occasionally be split oddly, the same trade-off the Translator/AI SRT
-     Format tools already make with their own chunking.
+   to tool #2. Two Gemini-powered follow-up tools live in this tab as well:
    - **AI Timestamp Fix** — re-sends the original media file (audio/video) together with the
      generated SRT to Gemini so it can listen/watch and correct drift in the start/end
      timestamps without touching the subtitle text. For long files this is sent in
@@ -50,8 +39,8 @@ runs the whole pipeline in one click.
 All API keys are stored only in the browser's `localStorage`. Gladia, Groq, and
 AssemblyAI calls go straight from the browser to each provider's own API
 (`api.gladia.io`, `api.groq.com`, `api.assemblyai.com`). **Gemini calls (TTS, Translator,
-AI Transcribe, AI Timestamp Fix, AI SRT Format, and Recap) are routed through a third-party
-Cloudflare Worker proxy (`vpn2-pro.herher650.workers.dev`) rather than going directly to
+AI Timestamp Fix, AI SRT Format, and Recap) are routed through a third-party Cloudflare
+Worker proxy (`vpn2-pro.herher650.workers.dev`) rather than going directly to
 `generativelanguage.googleapis.com`.** This means your Gemini API key is sent to, and
 passed through, that third-party worker on every request — only use this app with a
 Gemini key you're comfortable exposing to an operator you don't control (e.g. a
@@ -93,17 +82,10 @@ No build step, no secrets to configure — it's plain HTML/CSS/JS served as-is.
 
 ## Notes
 
-- The Translator, AI Transcribe, AI Timestamp Fix / AI SRT Format, and Recap tools share the
-  same Gemini API key list (entered once, in the **Text to Speech** tab's "Key & Model
-  Rotation" panel). Each tool keeps its own separate model list/rotation pointer (editable
-  from its own panel) so none of them interferes with another's model rotation. AI Transcribe
-  shares its Gemini model list with AI Timestamp Fix / AI SRT Format (the "Gemini Model List"
-  box in the Transcribe tab's key panel).
-- AI Transcribe's **Chunk Size** (seconds per audio slice) and **Workers** (parallel Gemini
-  requests) controls live in the Transcribe tab's Controls Panel, next to Language / Max
-  Retries / Timeout — larger chunks mean fewer requests but a higher chance of hitting a
-  per-request output-size ceiling on very talkative audio; more workers finish faster but
-  burn through key-pool quota faster too.
+- The Translator, AI Timestamp Fix / AI SRT Format, and Recap tools share the same Gemini
+  API key list (entered once, in the **Text to Speech** tab's "Key & Model Rotation"
+  panel). Each tool keeps its own separate model list/rotation pointer (editable from its
+  own panel) so none of them interferes with another's model rotation.
 - The **Transcribe** tab uses its own, separate key pool (Gladia + Groq + AssemblyAI keys,
   entered in its own "Transcription Key Pool" panel) since those are different providers
   entirely. The **Recap** tab reuses this same pool for its transcription step.
