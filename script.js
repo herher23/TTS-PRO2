@@ -3676,19 +3676,35 @@ const logRecap = makeLogger(recapLogBox);
 // Main "ONE CLICK GENERATE" handler
 // =============================================================
 async function handleGenerateRecap() {
+    if (isRecapProcessing) return;
+
+    // Show the progress panel / log box FIRST, before any validation check below — it used
+    // to stay hidden (class="hidden" in the HTML) until after these checks passed, so a
+    // missing file or missing key just logged an invisible line into a hidden box and the
+    // button looked like it did nothing at all. Now every outcome (including validation
+    // errors) is visible on screen.
+    recapProgressPanel.classList.remove('hidden');
+    recapLogBox.innerHTML = '';
+    recapDoneBadge.classList.add('hidden');
+    recapOutput.value = '';
+    recapStatusBadge.textContent = 'CHECKING';
+
     if (!selectedRecapFile) {
-        logRecap('ERROR: မီဒီယာဖိုင် ရွေးရန်လိုအပ်ပါသည်', 'err');
+        recapStatusBadge.textContent = 'FAILED';
+        logRecap('ERROR: မီဒီယာဖိုင် ရွေးရန်လိုအပ်ပါသည် — ဒီ "AI RECAP STUDIO" tab ပေါ်ရှိ dropzone တွင် ဖိုင်ကို ထပ်မံရွေးပါ (Transcribe tab ကို upload ထားခြင်းက Recap tab ကို ကူးမပေးပါ — tab နှစ်ခုစလုံး ဖိုင်သီးခြားစီ upload ပါလုပ်ရပါမည်)', 'err');
         return;
     }
     if (getTranscribeCredentialPool().length === 0) {
-        logRecap('ERROR: Gladia/Groq/AssemblyAI API key မရှိပါ — "မီဒီယာ → SRT" tab ရဲ့ Key Pool panel တွင် key ထည့်ပါ', 'err');
+        recapStatusBadge.textContent = 'FAILED';
+        logRecap('ERROR: Gladia/Groq/AssemblyAI API key မရှိပါ — "မီဒီယာ → SRT" tab ရဲ့ Key Pool panel တွင် key ထည့်ပြီး SAVE KEYS နှိပ်ထားရန် လိုအပ်ပါသည်', 'err');
         return;
     }
     if (getKeys().length === 0) {
-        logRecap('ERROR: Gemini API key မရှိပါ — "Text to Speech" tab ရဲ့ Key panel တွင် key ထည့်ပါ', 'err');
+        recapStatusBadge.textContent = 'FAILED';
+        logRecap('ERROR: Gemini API key မရှိပါ — "Text to Speech" tab ရဲ့ Key & Model Rotation panel တွင် key ထည့်ပြီး သိမ်းထားရန် လိုအပ်ပါသည်', 'err');
         return;
     }
-    if (isRecapProcessing) return;
+
     isRecapProcessing = true;
     recapAborted = false;
     transcribeAborted = false; // shared flag used by the reused transcription pipeline below
@@ -3701,10 +3717,6 @@ async function handleGenerateRecap() {
     generateRecapBtn.disabled = true;
     generateRecapBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin mr-2"></i><span>PROCESSING...</span>';
     stopRecapBtn.disabled = false;
-    recapDoneBadge.classList.add('hidden');
-    recapProgressPanel.classList.remove('hidden');
-    recapLogBox.innerHTML = '';
-    recapOutput.value = '';
     recapStatusBadge.textContent = 'TRANSCRIBING';
 
     logRecap(`ဖိုင် "${selectedRecapFile.name}" (${formatBytes(selectedRecapFile.size)}) — ONE CLICK စတင်နေသည်...`);
