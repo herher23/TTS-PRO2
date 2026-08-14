@@ -1819,12 +1819,18 @@ const mediaFileMeta = document.getElementById('mediaFileMeta');
 const transcribeLangSelect = document.getElementById('transcribeLangSelect');
 const transcribeMaxRetriesInput = document.getElementById('transcribeMaxRetries');
 const transcribeTimeoutSecInput = document.getElementById('transcribeTimeoutSec');
+const transcribeChunkSizeInput = document.getElementById('transcribeChunkSize');
+const transcribeWorkerCountInput = document.getElementById('transcribeWorkerCount');
 const clearTranscribeBtn = document.getElementById('clearTranscribeBtn');
 const transcribeBtn = document.getElementById('transcribeBtn');
+const geminiTranscribeBtn = document.getElementById('geminiTranscribeBtn');
 const stopTranscribeBtn = document.getElementById('stopTranscribeBtn');
 
 const transcribeProgressPanel = document.getElementById('transcribeProgressPanel');
 const transcribeStatusBadge = document.getElementById('transcribeStatusBadge');
+const transcribeChunkProgressWrap = document.getElementById('transcribeChunkProgressWrap');
+const transcribeChunkProgressFill = document.getElementById('transcribeChunkProgressFill');
+const transcribeWorkerGrid = document.getElementById('transcribeWorkerGrid');
 const transcribeLogBox = document.getElementById('transcribeLogBox');
 
 const transcribeDoneBadge = document.getElementById('transcribeDoneBadge');
@@ -2219,6 +2225,17 @@ async function callAssemblyAiTranscribe(key, file, language, timeoutSec, onLog) 
 // =============================================================
 // Combined retry/rotate driver across the Gladia+Groq+AssemblyAI pool
 // =============================================================
+// Single dispatch point for "call whichever provider this credential belongs to" — shared
+// by both the whole-file path (transcribeMediaWithRotation, still used by AI Recap Studio)
+// and the chunked/parallel path below (transcribeChunkWithRotation), so both stay in sync.
+async function callProviderTranscribe(cred, file, language, timeoutSec, onLog) {
+    return cred.provider === 'groq'
+        ? await callGroqTranscribe(cred.key, file, language, timeoutSec)
+        : cred.provider === 'assemblyai'
+        ? await callAssemblyAiTranscribe(cred.key, file, language, timeoutSec, onLog)
+        : await callGladiaTranscribe(cred.key, file, language, timeoutSec, onLog);
+}
+
 async function transcribeMediaWithRotation(file, language, maxRetries, timeoutSec, onLog) {
     const pool = getTranscribeCredentialPool();
     if (pool.length === 0) throw new Error('Gladia/Groq/AssemblyAI API key မရှိပါ။');
@@ -2231,11 +2248,7 @@ async function transcribeMediaWithRotation(file, language, maxRetries, timeoutSe
         if (transcribeAborted) throw new Error('Stopped by user');
         onLog(`[${cred.provider.toUpperCase()}] attempt ${attempt + 1}/${totalAttempts} စတင်နေသည်...`);
         try {
-            const result = cred.provider === 'groq'
-                ? await callGroqTranscribe(cred.key, file, language, timeoutSec)
-                : cred.provider === 'assemblyai'
-                ? await callAssemblyAiTranscribe(cred.key, file, language, timeoutSec, onLog)
-                : await callGladiaTranscribe(cred.key, file, language, timeoutSec, onLog);
+            const result = await callProviderTranscribe(cred, file, language, timeoutSec, onLog);
             return { ...result, provider: cred.provider };
         } catch (e) {
             lastErr = e;
@@ -2247,6 +2260,119 @@ async function transcribeMediaWithRotation(file, language, maxRetries, timeoutSe
         }
     }
     throw lastErr || new Error('Gladia/Groq/AssemblyAI providers အားလုံး failed ဖြစ်သွားပါသည်');
+}
+
+// Same rotation logic as above, but scoped to ONE time-chunk — used by the chunked/parallel
+// TRANSCRIBE flow (transcribeMediaWithWorkers) so Chunk Size / Workers now drive Gladia/Groq/
+// AssemblyAI too, not just AI TRANSCRIBE (GEMINI). Shares the same round-robin pointer as the
+// whole-file path, so a key/provider that fails on one chunk is rotated past on the next too.
+async function transcribeChunkWithRotation(chunkFile, language, maxRetries, timeoutSec, onLog) {
+    const pool = getTranscribeCredentialPool();
+    if (pool.length === 0) throw new Error('Gladia/Groq/AssemblyAI API key မရှိပါ။');
+
+    const totalAttempts = Math.min(pool.length * Math.max(maxRetries, 1), 15);
+    let cred = nextTranscribeCredential();
+    let lastErr;
+
+    for (let attempt = 0; attempt < totalAttempts; attempt++) {
+        if (transcribeAborted) throw new Error('Stopped by user');
+        onLog(`[${cred.provider.toUpperCase()}] chunk attempt ${attempt + 1}/${totalAttempts}...`);
+        try {
+            const result = await callProviderTranscribe(cred, chunkFile, language, timeoutSec, onLog);
+            return { ...result, provider: cred.provider };
+        } catch (e) {
+            lastErr = e;
+            onLog(`[${cred.provider.toUpperCase()}] chunk error: ${e.message} — rotating...`, 'err');
+            if (transcribeAborted) throw new Error('Stopped by user');
+            cred = advanceTranscribeCredential();
+            if (!cred) break;
+            await sleep(retryBackoffMs(attempt));
+        }
+    }
+    throw lastErr || new Error('Gladia/Groq/AssemblyAI providers အားလုံး failed ဖြစ်သွားပါသည် (chunk)');
+}
+
+// Converts one chunk's transcription result (Gladia's ready-made srtDirect, or the
+// segments[] array Groq/AssemblyAI return) into a subs array with timestamps shifted onto
+// the FULL media timeline by that chunk's start offset — mirrors offsetSrtTimestamps() in
+// the Gemini chunked path further down, so both merge the same way.
+function offsetProviderChunkResult(result, offsetSec) {
+    if (result.srtDirect) return offsetSrtTimestamps(result.srtDirect, offsetSec);
+    return (result.segments || [])
+        .filter(seg => (seg.text || '').trim())
+        .map(seg => ({
+            timeLine: `${formatSrtTimestamp((seg.start || 0) + offsetSec)} --> ${formatSrtTimestamp((seg.end || 0) + offsetSec)}`,
+            textLines: [seg.text.trim()]
+        }));
+}
+
+// ---- Worker-pool driven multi-chunk transcription across Gladia/Groq/AssemblyAI ----
+// Same Web Audio decode/slice/resample pipeline and same worker-pool pattern as
+// geminiTranscribeWithWorkers below — the only difference is each chunk is sent through
+// transcribeChunkWithRotation (Gladia/Groq/AssemblyAI pool) instead of straight to Gemini.
+async function transcribeMediaWithWorkers(audioBuffer, chunkSizeSec, workerCount, language, maxRetries, timeoutSec, onLog) {
+    const timeChunks = buildTimeChunks(audioBuffer.duration, chunkSizeSec);
+    const results = new Array(timeChunks.length);
+    const providerCounts = {};
+
+    renderTranscribeWorkerGrid(Math.max(1, Math.min(workerCount, timeChunks.length || 1)));
+    updateTranscribeChunkProgress(0, timeChunks.length);
+    onLog(`Media ကို ${timeChunks.length} chunk (${chunkSizeSec}s စီ) အဖြစ် ခွဲပြီးပါပြီ — ${Math.min(workerCount, timeChunks.length)} worker ဖြင့် Gladia/Groq/AssemblyAI pool ကို တစ်ပြိုင်နက် စတင်နေသည်...`);
+
+    let cursor = 0;
+    let done = 0;
+
+    async function workerLoop(workerId) {
+        while (true) {
+            if (transcribeAborted) return;
+            const myIdx = cursor++;
+            if (myIdx >= timeChunks.length) return;
+            const { start, end } = timeChunks[myIdx];
+
+            setTranscribeWorkerStatus(workerId, 'busy', myIdx + 1, timeChunks.length);
+            onLog(`Worker ${workerId + 1} → chunk ${myIdx + 1}/${timeChunks.length} (${formatTime(start)}–${formatTime(end)}) စတင်နေသည်...`);
+
+            // Never give up on a chunk — a transient error (HTTP 503, timeout, etc.) just
+            // means this round failed; loop back and try the whole chunk again (re-slice,
+            // re-encode, re-send, rotating across the whole Gladia/Groq/AssemblyAI pool again)
+            // until it succeeds or the user hits Stop, instead of skipping it after maxRetries.
+            let chunkRound = 0;
+            while (true) {
+                if (transcribeAborted) return;
+                try {
+                    const sliceBuf = sliceAudioBuffer(audioBuffer, start, end);
+                    const resampled = await resampleTo16kMono(sliceBuf);
+                    const wavBlob = audioBufferToWavBlob(resampled);
+                    const chunkFile = new File([wavBlob], `chunk_${myIdx + 1}.wav`, { type: 'audio/wav' });
+                    if (transcribeAborted) return;
+                    const result = await transcribeChunkWithRotation(chunkFile, language, maxRetries, timeoutSec, onLog);
+                    results[myIdx] = offsetProviderChunkResult(result, start);
+                    providerCounts[result.provider] = (providerCounts[result.provider] || 0) + 1;
+                    setTranscribeWorkerStatus(workerId, 'done', myIdx + 1, timeChunks.length);
+                    onLog(`Chunk ${myIdx + 1}/${timeChunks.length} ပြီးပါပြီ ✓ (${result.provider.toUpperCase()}, cue ${results[myIdx].length} ခု)`, 'ok');
+                    break;
+                } catch (e) {
+                    if (transcribeAborted) return;
+                    chunkRound++;
+                    setTranscribeWorkerStatus(workerId, 'error', myIdx + 1, timeChunks.length);
+                    onLog(`Chunk ${myIdx + 1} error: ${e.message} — အောင်မြင်သည်အထိ ပြန်ကြိုးစားနေသည် (round ${chunkRound + 1})...`, 'err');
+                    await sleep(retryBackoffMs(chunkRound));
+                }
+            }
+
+            done++;
+            updateTranscribeChunkProgress(done, timeChunks.length);
+        }
+    }
+
+    const effectiveWorkers = Math.max(1, Math.min(workerCount, timeChunks.length || 1));
+    const workerPool = [];
+    for (let i = 0; i < effectiveWorkers; i++) workerPool.push(workerLoop(i));
+    await Promise.all(workerPool);
+
+    const mergedSubs = [];
+    results.forEach(r => { if (r) mergedSubs.push(...r); });
+    return { srt: mergedSubs.length ? rebuildSrt(mergedSubs) : '', providerCounts };
 }
 
 // =============================================================
@@ -2270,39 +2396,49 @@ async function handleTranscribeMedia() {
     const language = transcribeLangSelect.value;
     const maxRetries = Math.max(parseInt(transcribeMaxRetriesInput.value, 10) || 2, 1);
     const timeoutSec = Math.max(parseInt(transcribeTimeoutSecInput.value, 10) || 120, 10);
+    const chunkSizeSec = Math.max(parseInt(transcribeChunkSizeInput.value, 10) || 60, 15);
+    const workerCount = Math.max(parseInt(transcribeWorkerCountInput.value, 10) || 3, 1);
 
     transcribeBtn.disabled = true;
     transcribeBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin mr-2"></i><span>TRANSCRIBING...</span>';
+    geminiTranscribeBtn.disabled = true;
     stopTranscribeBtn.disabled = false;
     transcribeDoneBadge.classList.add('hidden');
     transcribeProgressPanel.classList.remove('hidden');
+    transcribeChunkProgressWrap.classList.add('hidden');
+    transcribeWorkerGrid.innerHTML = '';
     transcribeLogBox.innerHTML = '';
     transcribeOutput.value = '';
     transcribeStatusBadge.textContent = 'RUNNING';
 
-    logTranscribe(`ဖိုင် "${selectedMediaFile.name}" (${formatBytes(selectedMediaFile.size)}) ကို transcribe စတင်နေသည်...`);
+    logTranscribe(`ဖိုင် "${selectedMediaFile.name}" (${formatBytes(selectedMediaFile.size)}) ကို Chunk Size: ${chunkSizeSec}s / Workers: ${workerCount} ဖြင့် Gladia/Groq/AssemblyAI pool ကို transcribe စတင်နေသည်...`);
 
     try {
-        const result = await transcribeMediaWithRotation(selectedMediaFile, language, maxRetries, timeoutSec, (msg, lvl) => logTranscribe(msg, lvl));
+        logTranscribe('Audio track ကို browser ထဲမှာ decode လုပ်နေသည်...');
+        const audioBuffer = await decodeMediaToAudioBuffer(selectedMediaFile);
+        logTranscribe(`Decode ပြီးပါပြီ — Duration: ${formatTime(audioBuffer.duration)}`, 'ok');
+
+        const { srt, providerCounts } = await transcribeMediaWithWorkers(audioBuffer, chunkSizeSec, workerCount, language, maxRetries, timeoutSec, (msg, lvl) => logTranscribe(msg, lvl));
 
         if (transcribeAborted) {
             logTranscribe('User မှ ရပ်တန့်လိုက်ပါသည်။', 'warn');
         }
 
-        const srt = result.srtDirect || segmentsToSrt(result.segments);
+        const subsForText = parseSrt(srt);
+        const providerSummary = Object.entries(providerCounts).map(([p, c]) => `${p.toUpperCase()}:${c}`).join(' ') || 'N/A';
         currentTranscribeResult = {
             srt: srt || '(No timestamped segments returned — see TXT tab)',
-            fullText: result.fullText || '',
-            jsonStr: JSON.stringify(result.raw, null, 2),
-            provider: result.provider,
+            fullText: subsForText.map(s => s.textLines.join(' ')).join('\n'),
+            jsonStr: JSON.stringify({ note: 'Generated via TRANSCRIBE — chunked across Gladia/Groq/AssemblyAI pool', chunkSizeSec, workerCount, providerCounts, cues: subsForText.length }, null, 2),
+            provider: providerSummary,
             sourceFileName: selectedMediaFile.name
         };
 
         renderTranscribeOutput();
-        transcribeOutputMeta.textContent = `Provider: ${result.provider.toUpperCase()} | Segments: ${result.segments.length} | Characters: ${currentTranscribeResult.fullText.length}`;
+        transcribeOutputMeta.textContent = `Provider: ${providerSummary} (chunked) | Segments: ${subsForText.length} | Characters: ${currentTranscribeResult.fullText.length}`;
         transcribeDoneBadge.classList.remove('hidden');
         transcribeStatusBadge.textContent = 'DONE';
-        logTranscribe(`Transcription ပြီးဆုံးပါပြီ ✓ (${result.provider.toUpperCase()})`, 'ok');
+        logTranscribe(`Transcription ပြီးဆုံးပါပြီ ✓ (${providerSummary})`, 'ok');
 
     } catch (err) {
         console.error('Transcription Error:', err);
@@ -2312,6 +2448,7 @@ async function handleTranscribeMedia() {
         isTranscribing = false;
         transcribeBtn.disabled = false;
         transcribeBtn.innerHTML = '<i class="fa-solid fa-microphone-lines text-yellow-300 text-base"></i><span>TRANSCRIBE</span>';
+        geminiTranscribeBtn.disabled = false;
         stopTranscribeBtn.disabled = true;
     }
 }
@@ -2334,6 +2471,8 @@ clearTranscribeBtn.addEventListener('click', () => {
     transcribeOutputMeta.textContent = '';
     transcribeDoneBadge.classList.add('hidden');
     transcribeLogBox.innerHTML = '';
+    transcribeWorkerGrid.innerHTML = '';
+    transcribeChunkProgressWrap.classList.add('hidden');
     transcribeProgressPanel.classList.add('hidden');
     transcribeStatusBadge.textContent = 'IDLE';
 });
@@ -2494,11 +2633,14 @@ function fileToBase64(file) {
     });
 }
 
-// Shared low-level retry/timeout/rotation caller for AI TIMESTAMP FIX + AI SRT FORMAT —
-// both are single-turn Gemini requests expecting { srt: string } back; they only differ in
-// what "parts" they send (media+text vs text-only) and the log tag shown to the user. This
-// replaces what used to be two nearly-identical ~70-line copies of the same retry loop.
-async function callGeminiSrtJson(parts, tag, maxRetries, timeoutSec, onLog) {
+// Shared low-level retry/timeout/rotation caller for AI TRANSCRIBE + AI TIMESTAMP FIX + AI
+// SRT FORMAT — all three are single-turn Gemini requests expecting { srt: string } back;
+// they only differ in what "parts" they send (media+text vs text-only) and the log tag shown
+// to the user. This replaces what used to be near-identical ~70-line copies of the same
+// retry loop. allowEmpty lets AI TRANSCRIBE treat a silent/music-only chunk (legitimately
+// zero cues) as a valid result instead of an error — the other two callers never pass this,
+// since an empty SRT from them really is a failed response.
+async function callGeminiSrtJson(parts, tag, maxRetries, timeoutSec, onLog, allowEmpty = false) {
     let cred = nextTimefixCredential();
     let lastErr;
     const responseSchema = { type: "OBJECT", properties: { srt: { type: "STRING" } }, required: ["srt"] };
@@ -2565,6 +2707,366 @@ async function callGeminiSrtJson(parts, tag, maxRetries, timeoutSec, onLog) {
     }
     throw lastErr || new Error(`${tag} — retries အားလုံး failed ဖြစ်သွားပါသည်`);
 }
+
+// =============================================================
+// AI TRANSCRIBE (GEMINI) — generate the ORIGINAL SRT directly from raw media
+// using only the Gemini key pool (no Gladia/Groq/AssemblyAI needed).
+//
+// Unlike AI TIMESTAMP FIX (which re-sends the WHOLE original media file with every
+// cue-batch request, because it needs an existing SRT to correlate against), this
+// tool has no existing SRT to chunk on — so instead it chunks the MEDIA itself,
+// by time, entirely in the browser via the Web Audio API (still no ffmpeg):
+//   1. decode the file's audio track once,
+//   2. slice it into Chunk-Size-second segments,
+//   3. downsample each slice to 16kHz mono (small, speech-optimized WAV),
+//   4. send Chunk-Size-second WAVs to Gemini in parallel across Worker-count
+//      workers (same worker-pool pattern as the SRT Translator tab),
+//   5. offset each chunk's returned timestamps by its start time and merge.
+// This keeps every single request small regardless of total file length, unlike
+// AI TIMESTAMP FIX's whole-file-per-request approach — the trade-off is that a
+// sentence spoken right across a chunk boundary can occasionally be split oddly,
+// the same trade-off the Translator/SRT-Format chunking already makes.
+// =============================================================
+const GEMINI_TRANSCRIBE_LANGUAGE_NAMES = {
+    my: 'Myanmar (Burmese)',
+    en: 'English',
+    th: 'Thai',
+    zh: 'Chinese',
+    ja: 'Japanese',
+    ko: 'Korean'
+};
+
+const GEMINI_TRANSCRIBE_SYSTEM_PROMPT =
+`သင်သည် ပရော်ဖက်ရှင်နယ် Speech-to-Text Subtitle AI ဖြစ်သည်။
+ရည်ရွယ်ချက်: တွဲပါ audio clip ကို တိတိကျကျ နားထောင်ပြီး ပြောဆိုထားသည့်အတိုင်း Original SRT subtitle ကို အစအဆုံး ထုတ်ပေးရန်ဖြစ်သည်။
+
+လုပ်ဆောင်ရန်:
+- ကြားရသည့်စကားလုံးများကိုသာ တိကျစွာ transcribe လုပ်ပါ — ဘာသာမပြန်ပါနှင့်၊ အနှစ်ချုပ်မလုပ်ပါနှင့်၊ ဖြည့်စွက်မပြောပါနှင့်။
+- Timestamp တစ်ခုစီကို အသံစတင်သည့်အချိန်မှ အသံဆုံးသည့်အချိန်အထိ တိကျစွာ ချိန်ညှိပါ (00:00:00,000 မှ ဤ clip ၏ စတင်ချိန်ဟု သတ်မှတ်ပါ)။
+- စကားမပြောသည့် (silence/music-only) အချိန်များကို cue အဖြစ် မထည့်ပါနှင့်။
+- စကားတစ်ခွန်းတည်းကို subtitle အများကြီး မခွဲပါနှင့် — သဘာဝကျသော စာကြောင်းတစ်ကြောင်း သို့မဟုတ် နှစ်ကြောင်းအဖြစ်သာ ခွဲပါ။
+- Subtitle နံပါတ်များကို 1 မှ အစဉ်လိုက် စီပါ။
+- ဤ clip ထဲတွင် စကားလုံးလုံးဝ မပါဝင်ပါက (သီချင်း/တိတ်ဆိတ်မှုသာ ရှိပါက) srt field ကို ဗလာစာလုံးကြိုး ("") အဖြစ် ပြန်ပေးပါ — cue လုပ်၍ ဖန်တီးမပြောပါနှင့်။
+- Output သည် UTF-8 SRT text သာ ဖြစ်ရမည်။`;
+
+// chunkIndex/totalChunks let the model know this is a self-contained slice — it does not
+// need (and should not try) to know what came before/after; timestamps always restart near
+// 00:00:00,000 for every chunk since each chunk is offset back onto the full timeline
+// afterwards by offsetSrtTimestamps().
+function buildGeminiTranscribePrompt(languageHint, chunkIndex, totalChunks) {
+    const langNote = languageHint
+        ? `\n\nဤ clip ရှိ စကားပြောဘာသာစကားမှာ ${languageHint} ဖြစ်သည် — ထိုဘာသာစကားဖြင့်သာ transcribe လုပ်ပါ။`
+        : '\n\nဤ clip ရှိ စကားပြောဘာသာစကားကို auto-detect လုပ်ပြီး ကြားရသည့်ဘာသာစကားအတိုင်းသာ transcribe လုပ်ပါ။';
+    const partNote = totalChunks > 1
+        ? `\n\nသတိပြုရန် — ဤ audio clip သည် ပိုရှည်သော media file တစ်ခု၏ Part ${chunkIndex + 1}/${totalChunks} အပိုင်းသာဖြစ်သည် (time-slice လုပ်ထားခြင်းဖြစ်ပြီး full context မလိုအပ်ပါ)။ ဤ clip အတွင်းမှ ကြားရသမျှကိုသာ transcribe လုပ်ပါ။`
+        : '';
+    return `${GEMINI_TRANSCRIBE_SYSTEM_PROMPT}${langNote}${partNote}`;
+}
+
+// ---- Web Audio decode / slice / resample / WAV-encode helpers (no ffmpeg) ----
+
+function decodeMediaToAudioBuffer(file) {
+    return file.arrayBuffer().then(arrayBuffer => {
+        const AudioCtx = window.AudioContext || window.webkitAudioContext;
+        if (!AudioCtx) throw new Error('ဤ browser တွင် Web Audio API မရှိပါ — AI TRANSCRIBE (GEMINI) ကို သုံး၍မရပါ');
+        const ctx = new AudioCtx();
+        return ctx.decodeAudioData(arrayBuffer)
+            .then(audioBuffer => { ctx.close().catch(() => {}); return audioBuffer; })
+            .catch(err => { ctx.close().catch(() => {}); throw new Error(`Media ဖိုင်ကို decode လုပ်ရာတွင် error တက်ပါသည် — codec မထောက်ပံ့ခြင်း ဖြစ်နိုင်ပါသည် (${err.message || err})`); });
+    });
+}
+
+// Copies out just [startSec, endSec) from the full decoded buffer into a standalone
+// AudioBuffer at the ORIGINAL sample rate (resampling happens separately below).
+function sliceAudioBuffer(audioBuffer, startSec, endSec) {
+    const sampleRate = audioBuffer.sampleRate;
+    const startSample = Math.max(0, Math.floor(startSec * sampleRate));
+    const endSample = Math.min(audioBuffer.length, Math.floor(endSec * sampleRate));
+    const frameCount = Math.max(1, endSample - startSample);
+    const numChannels = audioBuffer.numberOfChannels;
+    const OfflineCtx = window.OfflineAudioContext || window.webkitOfflineAudioContext;
+    const sliceCtx = new OfflineCtx(numChannels, frameCount, sampleRate);
+    const sliceBuffer = sliceCtx.createBuffer(numChannels, frameCount, sampleRate);
+    for (let ch = 0; ch < numChannels; ch++) {
+        const channelData = audioBuffer.getChannelData(ch).subarray(startSample, endSample);
+        sliceBuffer.copyToChannel(channelData, ch, 0);
+    }
+    return sliceBuffer;
+}
+
+// Downmixes to mono + resamples to 16kHz — small enough that even a multi-minute chunk
+// stays a few MB as WAV, and 16kHz mono is plenty for speech recognition quality.
+async function resampleTo16kMono(audioBuffer) {
+    const targetRate = 16000;
+    const frameCount = Math.max(1, Math.ceil(audioBuffer.duration * targetRate));
+    const OfflineCtx = window.OfflineAudioContext || window.webkitOfflineAudioContext;
+    const offlineCtx = new OfflineCtx(1, frameCount, targetRate);
+    const source = offlineCtx.createBufferSource();
+    source.buffer = audioBuffer;
+    source.connect(offlineCtx.destination);
+    source.start(0);
+    return offlineCtx.startRendering();
+}
+
+function audioBufferToWavBlob(audioBuffer) {
+    const numChannels = audioBuffer.numberOfChannels;
+    const sampleRate = audioBuffer.sampleRate;
+    const numFrames = audioBuffer.length;
+    const bytesPerSample = 2;
+    const blockAlign = numChannels * bytesPerSample;
+    const dataSize = numFrames * blockAlign;
+    const buffer = new ArrayBuffer(44 + dataSize);
+    const view = new DataView(buffer);
+    const writeString = (offset, str) => { for (let i = 0; i < str.length; i++) view.setUint8(offset + i, str.charCodeAt(i)); };
+
+    writeString(0, 'RIFF');
+    view.setUint32(4, 36 + dataSize, true);
+    writeString(8, 'WAVE');
+    writeString(12, 'fmt ');
+    view.setUint32(16, 16, true);
+    view.setUint16(20, 1, true); // PCM
+    view.setUint16(22, numChannels, true);
+    view.setUint32(24, sampleRate, true);
+    view.setUint32(28, sampleRate * blockAlign, true);
+    view.setUint16(32, blockAlign, true);
+    view.setUint16(34, 16, true);
+    writeString(36, 'data');
+    view.setUint32(40, dataSize, true);
+
+    const channels = [];
+    for (let ch = 0; ch < numChannels; ch++) channels.push(audioBuffer.getChannelData(ch));
+    let offset = 44;
+    for (let i = 0; i < numFrames; i++) {
+        for (let ch = 0; ch < numChannels; ch++) {
+            let sample = Math.max(-1, Math.min(1, channels[ch][i]));
+            sample = sample < 0 ? sample * 0x8000 : sample * 0x7fff;
+            view.setInt16(offset, sample, true);
+            offset += 2;
+        }
+    }
+    return new Blob([view], { type: 'audio/wav' });
+}
+
+function blobToBase64(blob) {
+    return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result).split(',')[1] || '');
+        reader.onerror = () => reject(new Error('WAV chunk ကို base64 ပြောင်းရာတွင် error တက်ပါသည်'));
+        reader.readAsDataURL(blob);
+    });
+}
+
+function buildTimeChunks(totalDurationSec, chunkSizeSec) {
+    const chunks = [];
+    let start = 0;
+    while (start < totalDurationSec) {
+        const end = Math.min(start + chunkSizeSec, totalDurationSec);
+        chunks.push({ start, end });
+        start = end;
+    }
+    if (chunks.length === 0) chunks.push({ start: 0, end: Math.max(totalDurationSec, 0.1) });
+    return chunks;
+}
+
+// Parses a chunk's SRT (timestamps relative to that chunk's own 00:00:00,000) and shifts
+// every cue's start/end by the chunk's real start offset in the full media timeline.
+// Returns a subs array (not yet renumbered — merging + rebuildSrt() renumbers at the end).
+function offsetSrtTimestamps(srtText, offsetSec) {
+    const subs = parseSrt(srtText);
+    const offsetMs = Math.round(offsetSec * 1000);
+    subs.forEach(s => {
+        const parts = s.timeLine.split('-->').map(p => p.trim());
+        if (parts.length !== 2) return;
+        const startMs = parseSrtTimestampToMs(parts[0]);
+        const endMs = parseSrtTimestampToMs(parts[1]);
+        if (startMs === null || endMs === null) return;
+        s.timeLine = `${formatSrtTimestamp((startMs + offsetMs) / 1000)} --> ${formatSrtTimestamp((endMs + offsetMs) / 1000)}`;
+    });
+    return subs;
+}
+
+async function callGeminiTranscribeChunk(wavBase64, chunkIndex, totalChunks, languageHint, maxRetries, timeoutSec, onLog) {
+    const parts = [
+        { inline_data: { mime_type: 'audio/wav', data: wavBase64 } },
+        { text: buildGeminiTranscribePrompt(languageHint, chunkIndex, totalChunks) }
+    ];
+    // allowEmpty=true — a silent/music-only chunk legitimately has zero cues.
+    return callGeminiSrtJson(parts, 'AI-TRANSCRIBE', maxRetries, timeoutSec, onLog, true);
+}
+
+// ---- Progress / worker-grid UI (separate chips from the Translator tab's #transWorkerGrid) ----
+
+function updateTranscribeChunkProgress(done, total) {
+    const pct = total > 0 ? Math.round((done / total) * 100) : 0;
+    transcribeChunkProgressWrap.classList.remove('hidden');
+    transcribeChunkProgressFill.style.width = `${pct}%`;
+}
+
+function renderTranscribeWorkerGrid(count) {
+    transcribeWorkerGrid.innerHTML = '';
+    for (let i = 0; i < count; i++) {
+        const chip = document.createElement('span');
+        chip.className = 'worker-chip';
+        chip.id = `transcribeWorkerChip${i}`;
+        chip.textContent = `W${i + 1}: idle`;
+        transcribeWorkerGrid.appendChild(chip);
+    }
+}
+
+function setTranscribeWorkerStatus(workerId, status, chunkNum, totalChunks) {
+    const chip = document.getElementById(`transcribeWorkerChip${workerId}`);
+    if (!chip) return;
+    chip.classList.remove('worker-busy', 'worker-done', 'worker-error');
+    if (status === 'busy') {
+        chip.classList.add('worker-busy');
+        chip.textContent = `W${workerId + 1}: #${chunkNum}/${totalChunks}`;
+    } else if (status === 'done') {
+        chip.classList.add('worker-done');
+        chip.textContent = `W${workerId + 1}: ✓ #${chunkNum}`;
+    } else if (status === 'error') {
+        chip.classList.add('worker-error');
+        chip.textContent = `W${workerId + 1}: ✗ #${chunkNum}`;
+    }
+}
+
+// ---- Worker-pool driven multi-chunk direct transcription (mirrors translateSrtWithWorkers) ----
+async function geminiTranscribeWithWorkers(audioBuffer, chunkSizeSec, workerCount, languageHint, maxRetries, timeoutSec, onLog) {
+    const timeChunks = buildTimeChunks(audioBuffer.duration, chunkSizeSec);
+    const results = new Array(timeChunks.length);
+
+    renderTranscribeWorkerGrid(Math.max(1, Math.min(workerCount, timeChunks.length || 1)));
+    updateTranscribeChunkProgress(0, timeChunks.length);
+    onLog(`Media ကို ${timeChunks.length} chunk (${chunkSizeSec}s စီ) အဖြစ် ခွဲပြီးပါပြီ — ${Math.min(workerCount, timeChunks.length)} worker ဖြင့် တစ်ပြိုင်နက် စတင်နေသည်...`);
+
+    let cursor = 0;
+    let done = 0;
+
+    async function workerLoop(workerId) {
+        while (true) {
+            if (transcribeAborted) return;
+            const myIdx = cursor++;
+            if (myIdx >= timeChunks.length) return;
+            const { start, end } = timeChunks[myIdx];
+
+            setTranscribeWorkerStatus(workerId, 'busy', myIdx + 1, timeChunks.length);
+            onLog(`Worker ${workerId + 1} → chunk ${myIdx + 1}/${timeChunks.length} (${formatTime(start)}–${formatTime(end)}) စတင်နေသည်...`);
+
+            // Never give up on a chunk — a transient error (HTTP 503, timeout, etc.) just
+            // means this round failed; loop back and try the whole chunk again (re-slice,
+            // re-encode, re-send) until it succeeds or the user hits Stop. This replaces the
+            // old behaviour of skipping the chunk (leaving a gap in the SRT) after maxRetries.
+            let chunkRound = 0;
+            while (true) {
+                if (transcribeAborted) return;
+                try {
+                    const sliceBuf = sliceAudioBuffer(audioBuffer, start, end);
+                    const resampled = await resampleTo16kMono(sliceBuf);
+                    const wavBlob = audioBufferToWavBlob(resampled);
+                    const wavBase64 = await blobToBase64(wavBlob);
+                    if (transcribeAborted) return;
+                    const rawSrt = await callGeminiTranscribeChunk(wavBase64, myIdx, timeChunks.length, languageHint, maxRetries, timeoutSec, onLog);
+                    results[myIdx] = rawSrt ? offsetSrtTimestamps(rawSrt, start) : [];
+                    setTranscribeWorkerStatus(workerId, 'done', myIdx + 1, timeChunks.length);
+                    onLog(`Chunk ${myIdx + 1}/${timeChunks.length} ပြီးပါပြီ ✓ (cue ${results[myIdx].length} ခု)`, 'ok');
+                    break;
+                } catch (e) {
+                    if (transcribeAborted) return;
+                    chunkRound++;
+                    setTranscribeWorkerStatus(workerId, 'error', myIdx + 1, timeChunks.length);
+                    onLog(`Chunk ${myIdx + 1} error: ${e.message} — အောင်မြင်သည်အထိ ပြန်ကြိုးစားနေသည် (round ${chunkRound + 1})...`, 'err');
+                    await sleep(retryBackoffMs(chunkRound));
+                }
+            }
+
+            done++;
+            updateTranscribeChunkProgress(done, timeChunks.length);
+        }
+    }
+
+    const effectiveWorkers = Math.max(1, Math.min(workerCount, timeChunks.length || 1));
+    const pool = [];
+    for (let i = 0; i < effectiveWorkers; i++) pool.push(workerLoop(i));
+    await Promise.all(pool);
+
+    const mergedSubs = [];
+    results.forEach(r => { if (r) mergedSubs.push(...r); });
+    return mergedSubs.length ? rebuildSrt(mergedSubs) : '';
+}
+
+async function handleGeminiTranscribe() {
+    if (!selectedMediaFile) {
+        logTranscribe('ERROR: မီဒီယာဖိုင် ရွေးရန်လိုအပ်ပါသည်', 'err');
+        return;
+    }
+    if (getKeys().length === 0) {
+        logTranscribe('ERROR: Gemini API key မရှိပါ — "Text to Speech" tab ရဲ့ Key & Model Rotation panel တွင် key ထည့်ပါ', 'err');
+        return;
+    }
+    if (isTranscribing) return;
+    isTranscribing = true;
+    transcribeAborted = false;
+
+    const chunkSizeSec = Math.max(parseInt(transcribeChunkSizeInput.value, 10) || 60, 15);
+    const workerCount = Math.max(parseInt(transcribeWorkerCountInput.value, 10) || 3, 1);
+    const maxRetries = Math.max(parseInt(transcribeMaxRetriesInput.value, 10) || 2, 1);
+    const timeoutSec = Math.max(parseInt(transcribeTimeoutSecInput.value, 10) || 120, 30);
+    const langVal = transcribeLangSelect.value;
+    const languageHint = GEMINI_TRANSCRIBE_LANGUAGE_NAMES[langVal] || null;
+
+    transcribeBtn.disabled = true;
+    geminiTranscribeBtn.disabled = true;
+    geminiTranscribeBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i><span>GEMINI TRANSCRIBING...</span>';
+    stopTranscribeBtn.disabled = false;
+    transcribeDoneBadge.classList.add('hidden');
+    transcribeProgressPanel.classList.remove('hidden');
+    transcribeChunkProgressWrap.classList.add('hidden');
+    transcribeWorkerGrid.innerHTML = '';
+    transcribeLogBox.innerHTML = '';
+    transcribeOutput.value = '';
+    transcribeStatusBadge.textContent = 'RUNNING';
+
+    logTranscribe(`ဖိုင် "${selectedMediaFile.name}" (${formatBytes(selectedMediaFile.size)}) ကို Gemini တိုက်ရိုက် transcribe စတင်နေသည် (Chunk Size: ${chunkSizeSec}s, Workers: ${workerCount})...`);
+
+    try {
+        logTranscribe('Audio track ကို browser ထဲမှာ decode လုပ်နေသည်...');
+        const audioBuffer = await decodeMediaToAudioBuffer(selectedMediaFile);
+        logTranscribe(`Decode ပြီးပါပြီ — Duration: ${formatTime(audioBuffer.duration)}`, 'ok');
+
+        const srt = await geminiTranscribeWithWorkers(audioBuffer, chunkSizeSec, workerCount, languageHint, maxRetries, timeoutSec, (msg, lvl) => logTranscribe(msg, lvl));
+
+        if (transcribeAborted) {
+            logTranscribe('User မှ ရပ်တန့်လိုက်ပါသည်။', 'warn');
+        }
+
+        const subsForText = parseSrt(srt);
+        currentTranscribeResult = {
+            srt: srt || '(No speech detected in this media — empty SRT)',
+            fullText: subsForText.map(s => s.textLines.join(' ')).join('\n'),
+            jsonStr: JSON.stringify({ note: 'Generated via AI TRANSCRIBE (GEMINI) — chunked, no Gladia/Groq/AssemblyAI', chunkSizeSec, workerCount, cues: subsForText.length }, null, 2),
+            provider: 'gemini',
+            sourceFileName: selectedMediaFile.name
+        };
+
+        renderTranscribeOutput();
+        transcribeOutputMeta.textContent = `Provider: GEMINI (direct) | Segments: ${subsForText.length} | Characters: ${currentTranscribeResult.fullText.length}`;
+        transcribeDoneBadge.classList.remove('hidden');
+        transcribeStatusBadge.textContent = 'DONE';
+        logTranscribe('AI TRANSCRIBE (GEMINI) ပြီးဆုံးပါပြီ ✓', 'ok');
+
+    } catch (err) {
+        console.error('Gemini Transcribe Error:', err);
+        transcribeStatusBadge.textContent = 'FAILED';
+        logTranscribe(`FAILED: ${err.message}`, 'err');
+    } finally {
+        isTranscribing = false;
+        transcribeBtn.disabled = false;
+        geminiTranscribeBtn.disabled = false;
+        geminiTranscribeBtn.innerHTML = '<i class="fa-solid fa-brain text-yellow-300 text-base"></i><span>AI TRANSCRIBE (GEMINI)</span>';
+        stopTranscribeBtn.disabled = true;
+    }
+}
+
+geminiTranscribeBtn.addEventListener('click', handleGeminiTranscribe);
 
 // Cues per Gemini request for AI TIMESTAMP FIX. Previously the ENTIRE SRT was requested
 // back in one JSON response alongside the full media file — on a 20-30 min video that could
