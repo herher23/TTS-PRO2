@@ -1528,11 +1528,17 @@ function parseSrtTimestampToMs(ts) {
     return ((parseInt(hh, 10) * 3600 + parseInt(mm, 10) * 60 + parseInt(ss, 10)) * 1000) + parseInt(ms, 10);
 }
 
-// Scans cue timestamps for format errors, zero/negative duration, and overlaps with
-// the previous cue — the common issues that break playback sync in a video player.
-function checkSrtTimestamps(subs) {
+// Scans cue timestamps for format errors, zero/negative duration, overlaps with the
+// previous cue, and (when mediaDurationSec is supplied) cues that start/end past the
+// actual media length — the common issues that break playback sync in a video player.
+// mediaDurationSec is optional so existing callers (Translator tab, which has no media
+// file, only the SRT text) keep working unchanged.
+function checkSrtTimestamps(subs, mediaDurationSec = null) {
     const issues = [];
     let prevEndMs = -1;
+    const durationMs = (typeof mediaDurationSec === 'number' && isFinite(mediaDurationSec))
+        ? Math.round(mediaDurationSec * 1000)
+        : null;
     subs.forEach((s, i) => {
         const parts = s.timeLine.split('-->').map(p => p.trim());
         if (parts.length !== 2) {
@@ -1550,6 +1556,11 @@ function checkSrtTimestamps(subs) {
         }
         if (prevEndMs !== -1 && startMs < prevEndMs) {
             issues.push(`#${i + 1}: ရှေ့ subtitle နှင့် timestamp ထပ်နေသည် (overlap) — "${s.timeLine}"`);
+        }
+        if (durationMs !== null && startMs > durationMs) {
+            issues.push(`#${i + 1}: media အရှည် (${formatSrtTimestamp(durationMs / 1000)}) ထက်ကျော်ပြီးမှ subtitle စတင်နေသည် — "${s.timeLine}"`);
+        } else if (durationMs !== null && endMs > durationMs) {
+            issues.push(`#${i + 1}: media အရှည် (${formatSrtTimestamp(durationMs / 1000)}) ကျော်၍ အဆုံးသတ်နေသည် — "${s.timeLine}"`);
         }
         prevEndMs = Math.max(prevEndMs, endMs);
     });
@@ -1572,36 +1583,39 @@ function checkUntranslatedLines(subs) {
     return issues;
 }
 
-function renderCheckResults(title, issues, emptyMsg) {
-    srtCheckResultsBox.classList.remove('hidden');
-    srtCheckResultsBox.innerHTML = '';
+// targetBox defaults to the Translator tab's results box so this stays a drop-in
+// replacement for the two call sites below; the Transcribe tab's check button passes
+// transcribeCheckResultsBox explicitly instead.
+function renderCheckResults(title, issues, emptyMsg, targetBox = srtCheckResultsBox) {
+    targetBox.classList.remove('hidden');
+    targetBox.innerHTML = '';
     const header = document.createElement('div');
     header.className = 'font-mono text-[10px] text-purple-300 uppercase tracking-widest mb-1';
     header.textContent = title;
-    srtCheckResultsBox.appendChild(header);
+    targetBox.appendChild(header);
 
     if (issues.length === 0) {
         const line = document.createElement('div');
         line.className = 'log-entry-ok';
         line.textContent = `✓ ${emptyMsg}`;
-        srtCheckResultsBox.appendChild(line);
+        targetBox.appendChild(line);
         return;
     }
     issues.forEach(msg => {
         const line = document.createElement('div');
         line.className = 'log-entry-err';
         line.textContent = `✗ ${msg}`;
-        srtCheckResultsBox.appendChild(line);
+        targetBox.appendChild(line);
     });
 }
 
-function showCheckNotice(msg) {
-    srtCheckResultsBox.classList.remove('hidden');
-    srtCheckResultsBox.innerHTML = '';
+function showCheckNotice(msg, targetBox = srtCheckResultsBox) {
+    targetBox.classList.remove('hidden');
+    targetBox.innerHTML = '';
     const line = document.createElement('div');
     line.className = 'log-entry-warn';
     line.textContent = msg;
-    srtCheckResultsBox.appendChild(line);
+    targetBox.appendChild(line);
 }
 
 checkTimestampsOutputBtn.addEventListener('click', () => {
@@ -1622,6 +1636,7 @@ checkUntranslatedBtn.addEventListener('click', () => {
     const issues = checkUntranslatedLines(lastTranslatedSubs);
     renderCheckResults(`ဘာသာမပြန်ရသေးသော lines — ${lastTranslatedSubs.length} lines စစ်ဆေးပြီး`, issues, 'အားလုံး ဘာသာပြန်ပြီးပါပြီ');
 });
+
 
 // =============================================================
 // Main translate handler
@@ -1839,6 +1854,8 @@ const outFormatTxtBtn = document.getElementById('outFormatTxtBtn');
 const outFormatJsonBtn = document.getElementById('outFormatJsonBtn');
 const fixTimestampsBtn = document.getElementById('fixTimestampsBtn');
 const formatSrtBtn = document.getElementById('formatSrtBtn');
+const checkTranscribeTimestampsBtn = document.getElementById('checkTranscribeTimestampsBtn');
+const transcribeCheckResultsBox = document.getElementById('transcribeCheckResultsBox');
 const copyTranscribeBtn = document.getElementById('copyTranscribeBtn');
 const downloadTranscribeBtn = document.getElementById('downloadTranscribeBtn');
 const transcribeOutput = document.getElementById('transcribeOutput');
@@ -1853,6 +1870,7 @@ const LS_ASSEMBLYAI_KEYS = 'neoyangon_assemblyai_keys';
 const LS_TRANSCRIBE_IDX = 'neoyangon_transcribe_idx';
 
 let selectedMediaFile = null;
+let selectedMediaDurationSec = null; // set once probe.onloadedmetadata fires in setSelectedMediaFile()
 let isTranscribing = false;
 let transcribeAborted = false;
 let activeTranscribeAbortControllers = [];
@@ -1953,6 +1971,7 @@ function getMediaSizeWarning(bytes) {
 function setSelectedMediaFile(file) {
     if (!file) return;
     selectedMediaFile = file;
+    selectedMediaDurationSec = null; // unknown again until this file's metadata probe resolves below
     const sizeWarning = getMediaSizeWarning(file.size);
     mediaFileMeta.textContent = `${file.name} • ${formatBytes(file.size)}${sizeWarning}`;
     mediaFileDropzone.classList.add('border-emerald-500/50');
@@ -1961,6 +1980,7 @@ function setSelectedMediaFile(file) {
     const probe = document.createElement(file.type.startsWith('video') ? 'video' : 'audio');
     probe.preload = 'metadata';
     probe.onloadedmetadata = () => {
+        selectedMediaDurationSec = probe.duration;
         mediaFileMeta.textContent = `${file.name} • ${formatBytes(file.size)} • ${formatTime(probe.duration)}${sizeWarning}`;
         URL.revokeObjectURL(objectUrl);
     };
@@ -2463,12 +2483,15 @@ function handleStopTranscribe() {
 
 clearTranscribeBtn.addEventListener('click', () => {
     selectedMediaFile = null;
+    selectedMediaDurationSec = null;
     mediaFileInput.value = '';
     mediaFileMeta.textContent = 'ဖိုင်ရွေးရန် (.mp4 / .mp3 / .wav / .m4a) — ဒီနေရာသို့ drag & drop လည်းရပါသည်';
     mediaFileDropzone.classList.remove('border-emerald-500/50');
     currentTranscribeResult = null;
     transcribeOutput.value = '';
     transcribeOutputMeta.textContent = '';
+    transcribeCheckResultsBox.classList.add('hidden');
+    transcribeCheckResultsBox.innerHTML = '';
     transcribeDoneBadge.classList.add('hidden');
     transcribeLogBox.innerHTML = '';
     transcribeWorkerGrid.innerHTML = '';
@@ -3168,6 +3191,28 @@ async function handleFixTimestamps() {
 }
 
 fixTimestampsBtn.addEventListener('click', handleFixTimestamps);
+
+// Transcribe tab's own Timestamp Check — runs against the ORIGINAL SRT (from TRANSCRIBE /
+// AI TRANSCRIBE / AI TIMESTAMP FIX / AI SRT FORMAT), before it ever reaches the Translator
+// tab. Also flags cues that start/end past the actual media duration when that's known
+// (set in setSelectedMediaFile's metadata probe) — the clearest sign of real timestamp
+// drift, which checkSrtTimestamps alone (format/overlap only) can't catch on its own.
+checkTranscribeTimestampsBtn.addEventListener('click', () => {
+    if (!currentTranscribeResult || !currentTranscribeResult.srt) {
+        showCheckNotice('SRT output မရှိသေးပါ — အရင် TRANSCRIBE / AI TRANSCRIBE လုပ်ပါ', transcribeCheckResultsBox);
+        return;
+    }
+    const subs = parseSrt(currentTranscribeResult.srt);
+    if (subs.length === 0) {
+        showCheckNotice('SRT ကို parse မရပါ — format ချို့ယွင်းနေနိုင်ပါသည်', transcribeCheckResultsBox);
+        return;
+    }
+    const issues = checkSrtTimestamps(subs, selectedMediaDurationSec);
+    const title = selectedMediaDurationSec
+        ? `TIMESTAMP CHECK — ${subs.length} lines (media ${formatTime(selectedMediaDurationSec)}) စစ်ဆေးပြီး`
+        : `TIMESTAMP CHECK — ${subs.length} lines စစ်ဆေးပြီး`;
+    renderCheckResults(title, issues, 'Timestamp error များ မတွေ့ပါ', transcribeCheckResultsBox);
+});
 
 // =============================================================
 // AI SRT FORMAT — Gemini text-only cleanup pass
