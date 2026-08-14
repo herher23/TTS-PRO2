@@ -204,39 +204,3 @@ input[type=range]::-webkit-slider-thumb {
     opacity: 0.7;
 }
 .glossary-row button:hover { opacity: 1; }
-
-/* The smallest meta/log text (Tailwind's text-[10px]) is hard to read in Myanmar (Padauk),
-   which needs a bit more room per glyph than Latin text at the same pixel size. */
-.text-\[10px\] { font-size: 11px; }
-
-/* Tab nav: 4 buttons at flex-1 + min-w-[150px] can split unevenly on narrow screens (e.g.
-   3 in one row plus a 4th alone stretched full-width) depending on the exact viewport
-   width. Force a predictable, even 2x2 grid below 700px instead. (nav .tab-btn has higher
-   specificity than the single-class Tailwind utilities it's overriding, so this wins
-   regardless of stylesheet order.) */
-@media (max-width: 700px) {
-    nav .tab-btn {
-        flex: 1 1 calc(50% - 0.5rem);
-        min-width: 0;
-    }
-}
-
-/* Respect reduced-motion preferences — the continuous shimmer/border-glow/scanline
-   animations are purely decorative. */
-@media (prefers-reduced-motion: reduce) {
-    .holo-shimmer::after,
-    .animated-border,
-    .scanlines {
-        animation: none !important;
-    }
-}
-
-/* Lighter backdrop-filter blur on small screens. Full 16px blur across every glass panel
-   is one of the more GPU-expensive effects on this page and can cause scroll jank/battery
-   drain on lower-end mobile devices; 8px keeps a similar look for much less cost. */
-@media (max-width: 640px) {
-    .holo-glass {
-        backdrop-filter: blur(8px);
-        -webkit-backdrop-filter: blur(8px);
-    }
-}
