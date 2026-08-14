@@ -1521,11 +1521,30 @@ clearSrtBtn.addEventListener('click', () => {
 // =============================================================
 // Output panel checks: timestamp errors + still-untranslated lines
 // =============================================================
+// Parses an SRT timestamp into milliseconds. Tries the strict standard format first
+// (fast path, matches the overwhelming majority of cues). Falls back to a lenient parser
+// for common non-standard variants that Gemini (and other providers) occasionally drift
+// into — especially on short/odd-length tail chunks — such as a colon or period before the
+// milliseconds instead of a comma, or a collapsed/missing hours field (MM:SS,mmm instead of
+// HH:MM:SS,mmm). A stricter, exact-match-only version of this function used to return null
+// on ANY such deviation, which caused offsetSrtTimestamps() to silently leave that cue's
+// timestamp un-shifted (still relative to its own chunk, not the full media timeline) —
+// producing SRTs where the last chunk's cues appear clustered near the START of the file
+// instead of near the end, with no warning that anything had gone wrong.
 function parseSrtTimestampToMs(ts) {
-    const m = ts.trim().match(/^(\d{2}):(\d{2}):(\d{2}),(\d{3})$/);
+    const t = ts.trim();
+    let m = t.match(/^(\d{2}):(\d{2}):(\d{2}),(\d{3})$/);
+    if (m) {
+        const [, hh, mm, ss, ms] = m;
+        return ((parseInt(hh, 10) * 3600 + parseInt(mm, 10) * 60 + parseInt(ss, 10)) * 1000) + parseInt(ms, 10);
+    }
+    // Lenient fallback: optional 1-2 digit hour group, required minute:second, then any of
+    // , . : as the ms separator, with a 1-3 digit ms field (padded out to milliseconds).
+    m = t.match(/^(?:(\d{1,2}):)?(\d{1,2}):(\d{1,2})[.,:](\d{1,3})$/);
     if (!m) return null;
-    const [, hh, mm, ss, ms] = m;
-    return ((parseInt(hh, 10) * 3600 + parseInt(mm, 10) * 60 + parseInt(ss, 10)) * 1000) + parseInt(ms, 10);
+    const [, hh, mm, ss, msRaw] = m;
+    const ms = parseInt(msRaw.padEnd(3, '0').slice(0, 3), 10);
+    return ((parseInt(hh || '0', 10) * 3600 + parseInt(mm, 10) * 60 + parseInt(ss, 10)) * 1000) + ms;
 }
 
 // Scans cue timestamps for format errors, zero/negative duration, overlaps with the
@@ -2316,8 +2335,8 @@ async function transcribeChunkWithRotation(chunkFile, language, maxRetries, time
 // segments[] array Groq/AssemblyAI return) into a subs array with timestamps shifted onto
 // the FULL media timeline by that chunk's start offset — mirrors offsetSrtTimestamps() in
 // the Gemini chunked path further down, so both merge the same way.
-function offsetProviderChunkResult(result, offsetSec) {
-    if (result.srtDirect) return offsetSrtTimestamps(result.srtDirect, offsetSec);
+function offsetProviderChunkResult(result, offsetSec, onLog) {
+    if (result.srtDirect) return offsetSrtTimestamps(result.srtDirect, offsetSec, onLog);
     return (result.segments || [])
         .filter(seg => (seg.text || '').trim())
         .map(seg => ({
@@ -2366,7 +2385,7 @@ async function transcribeMediaWithWorkers(audioBuffer, chunkSizeSec, workerCount
                     const chunkFile = new File([wavBlob], `chunk_${myIdx + 1}.wav`, { type: 'audio/wav' });
                     if (transcribeAborted) return;
                     const result = await transcribeChunkWithRotation(chunkFile, language, maxRetries, timeoutSec, onLog);
-                    results[myIdx] = offsetProviderChunkResult(result, start);
+                    results[myIdx] = offsetProviderChunkResult(result, start, onLog);
                     providerCounts[result.provider] = (providerCounts[result.provider] || 0) + 1;
                     setTranscribeWorkerStatus(workerId, 'done', myIdx + 1, timeChunks.length);
                     onLog(`Chunk ${myIdx + 1}/${timeChunks.length} ပြီးပါပြီ ✓ (${result.provider.toUpperCase()}, cue ${results[myIdx].length} ခု)`, 'ok');
@@ -2766,6 +2785,7 @@ const GEMINI_TRANSCRIBE_SYSTEM_PROMPT =
 လုပ်ဆောင်ရန်:
 - ကြားရသည့်စကားလုံးများကိုသာ တိကျစွာ transcribe လုပ်ပါ — ဘာသာမပြန်ပါနှင့်၊ အနှစ်ချုပ်မလုပ်ပါနှင့်၊ ဖြည့်စွက်မပြောပါနှင့်။
 - Timestamp တစ်ခုစီကို အသံစတင်သည့်အချိန်မှ အသံဆုံးသည့်အချိန်အထိ တိကျစွာ ချိန်ညှိပါ (00:00:00,000 မှ ဤ clip ၏ စတင်ချိန်ဟု သတ်မှတ်ပါ)။
+- Timestamp format ကို "HH:MM:SS,mmm" အတိအကျ လိုက်နာပါ — hour 2 လုံး : minute 2 လုံး : second 2 လုံး ကော်မာ millisecond 3 လုံး (ဥပမာ − 00:00:08,200)။ hour digit ကို ဘယ်တော့မှ မချန်ထားပါနှင့် (clip တိုလျှင်တောင် "00" ဟု ထည့်ပါ)၊ millisecond ရှေ့တွင် ကော်မာ "," ကိုသာ သုံးပါ — colon ":" (ဥပမာ 00:08:200 လို ပုံစံ) ဒါမှမဟုတ် dot "." ကို လုံးဝမသုံးပါနှင့်။ clip တိုတိုတို့ (ဥပမာ - နောက်ဆုံး chunk) အတွက်လည်း ဒီ format တိကျမှုကို အတူတူပင် လိုက်နာရပါမည်။
 - စကားမပြောသည့် (silence/music-only) အချိန်များကို cue အဖြစ် မထည့်ပါနှင့်။
 - စကားတစ်ခွန်းတည်းကို subtitle အများကြီး မခွဲပါနှင့် — သဘာဝကျသော စာကြောင်းတစ်ကြောင်း သို့မဟုတ် နှစ်ကြောင်းအဖြစ်သာ ခွဲပါ။
 - Subtitle နံပါတ်များကို 1 မှ အစဉ်လိုက် စီပါ။
@@ -2894,18 +2914,26 @@ function buildTimeChunks(totalDurationSec, chunkSizeSec) {
 // Parses a chunk's SRT (timestamps relative to that chunk's own 00:00:00,000) and shifts
 // every cue's start/end by the chunk's real start offset in the full media timeline.
 // Returns a subs array (not yet renumbered — merging + rebuildSrt() renumbers at the end).
-function offsetSrtTimestamps(srtText, offsetSec) {
+// onLog is optional — when given, any cue whose timestamp still can't be parsed (even by
+// parseSrtTimestampToMs's lenient fallback) is logged and DROPPED rather than kept: leaving
+// it in un-offset would silently place it at the wrong absolute time, which is worse than a
+// visible gap the user can catch with TIMESTAMP CHECK or re-run with AI TIMESTAMP FIX.
+function offsetSrtTimestamps(srtText, offsetSec, onLog) {
     const subs = parseSrt(srtText);
     const offsetMs = Math.round(offsetSec * 1000);
+    const kept = [];
     subs.forEach(s => {
         const parts = s.timeLine.split('-->').map(p => p.trim());
-        if (parts.length !== 2) return;
-        const startMs = parseSrtTimestampToMs(parts[0]);
-        const endMs = parseSrtTimestampToMs(parts[1]);
-        if (startMs === null || endMs === null) return;
+        const startMs = parts.length === 2 ? parseSrtTimestampToMs(parts[0]) : null;
+        const endMs = parts.length === 2 ? parseSrtTimestampToMs(parts[1]) : null;
+        if (startMs === null || endMs === null) {
+            if (onLog) onLog(`Chunk timestamp parse မရပါ — cue "${(s.textLines || []).join(' ').slice(0, 40)}" ကို skip လိုက်ပါသည် ("${s.timeLine}")`, 'err');
+            return;
+        }
         s.timeLine = `${formatSrtTimestamp((startMs + offsetMs) / 1000)} --> ${formatSrtTimestamp((endMs + offsetMs) / 1000)}`;
+        kept.push(s);
     });
-    return subs;
+    return kept;
 }
 
 async function callGeminiTranscribeChunk(wavBase64, chunkIndex, totalChunks, languageHint, maxRetries, timeoutSec, onLog) {
@@ -2988,7 +3016,7 @@ async function geminiTranscribeWithWorkers(audioBuffer, chunkSizeSec, workerCoun
                     const wavBase64 = await blobToBase64(wavBlob);
                     if (transcribeAborted) return;
                     const rawSrt = await callGeminiTranscribeChunk(wavBase64, myIdx, timeChunks.length, languageHint, maxRetries, timeoutSec, onLog);
-                    results[myIdx] = rawSrt ? offsetSrtTimestamps(rawSrt, start) : [];
+                    results[myIdx] = rawSrt ? offsetSrtTimestamps(rawSrt, start, onLog) : [];
                     setTranscribeWorkerStatus(workerId, 'done', myIdx + 1, timeChunks.length);
                     onLog(`Chunk ${myIdx + 1}/${timeChunks.length} ပြီးပါပြီ ✓ (cue ${results[myIdx].length} ခု)`, 'ok');
                     break;
