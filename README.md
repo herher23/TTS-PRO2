@@ -5,18 +5,12 @@ everything below runs straight in the browser). Four tools in one page, designed
 pipeline: **Transcribe → Translate → Speak**, plus a standalone **Recap** tool that
 runs the whole pipeline in one click.
 
-1. **Media Transcribe** — upload an `.mp4` / `.mp3` (or `.wav` / `.m4a` / `.webm`) file.
-   The audio track is decoded and chunked entirely in the browser via the Web Audio API
-   (no ffmpeg): each **Chunk Size**-second slice is downsampled to a small 16kHz-mono WAV
-   and sent in parallel across a configurable number of **Workers** to a **Gladia + Groq
-   (Whisper) + AssemblyAI key pool**, with auto rotation — on any chunk's error/timeout it
-   rotates to the next key across all three providers for that chunk. Each chunk's returned
-   timestamps are then offset back onto the full timeline and merged, the same chunking
-   approach AI Transcribe (Gemini) below already used — so Chunk Size / Workers now apply to
-   every provider, not just Gemini. Outputs three formats you can copy or download — a
-   ready-made `.srt`, a plain `transcript.txt`, and a `result.json` summary (provider mix,
-   chunk/worker counts, cue count — since the result is now stitched from many provider
-   responses rather than one). A "Send to Translator" button hands the generated SRT straight
+1. **Media Transcribe** — upload an `.mp4` / `.mp3` (or `.wav` / `.m4a` / `.webm`)
+   file and it's sent straight from the browser to a **Gladia + Groq (Whisper) + AssemblyAI
+   key pool** with auto rotation: on any error/timeout it automatically rotates to the next
+   key across all three providers. Outputs three formats you can copy or download — a
+   ready-made `.srt`, a plain `transcript.txt`, and the raw `result.json` from whichever
+   provider handled the job. A "Send to Translator" button hands the generated SRT straight
    to tool #2. Three Gemini-powered follow-up tools live in this tab as well:
    - **AI Transcribe (Gemini)** — generates the *original* SRT directly from the raw media
      using only the Gemini key pool, with no Gladia/Groq/AssemblyAI key required. The audio
@@ -105,13 +99,11 @@ No build step, no secrets to configure — it's plain HTML/CSS/JS served as-is.
   from its own panel) so none of them interferes with another's model rotation. AI Transcribe
   shares its Gemini model list with AI Timestamp Fix / AI SRT Format (the "Gemini Model List"
   box in the Transcribe tab's key panel).
-- **Chunk Size** (seconds per audio slice) and **Workers** (parallel requests) controls live
-  in the Transcribe tab's Controls Panel, next to Language / Max Retries / Timeout, and now
-  drive BOTH transcribe buttons — TRANSCRIBE (Gladia/Groq/AssemblyAI pool) and AI TRANSCRIBE
-  (GEMINI) — since both chunk the media client-side and process it with the same worker-pool
-  pattern. Larger chunks mean fewer requests but a higher chance of hitting a per-request
-  size/output ceiling on very talkative audio; more workers finish faster but burn through
-  key-pool quota faster too.
+- AI Transcribe's **Chunk Size** (seconds per audio slice) and **Workers** (parallel Gemini
+  requests) controls live in the Transcribe tab's Controls Panel, next to Language / Max
+  Retries / Timeout — larger chunks mean fewer requests but a higher chance of hitting a
+  per-request output-size ceiling on very talkative audio; more workers finish faster but
+  burn through key-pool quota faster too.
 - The **Transcribe** tab uses its own, separate key pool (Gladia + Groq + AssemblyAI keys,
   entered in its own "Transcription Key Pool" panel) since those are different providers
   entirely. The **Recap** tab reuses this same pool for its transcription step.

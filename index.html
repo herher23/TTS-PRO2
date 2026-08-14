@@ -711,7 +711,7 @@
                             class="w-full p-3 rounded-lg bg-black/60 border border-purple-500/30 text-purple-200 placeholder-purple-800/60 font-mono text-xs focus:outline-none focus:border-orange-500/80 resize-y"></textarea>
                         <p class="font-mono text-[10px] text-cyan-500/60 mt-2">
                             <i class="fa-solid fa-circle-info mr-1"></i>
-                            "Text to Speech" tab ရဲ့ Gemini API key pool ကိုပဲ ပြန်သုံးပါမည် — ဒီနေရာမှာ model list ကိုသာ သီးခြား ပြင်ပါ။ AI TRANSCRIBE (GEMINI) button ကလည်း ဒီ key pool + model list ကိုပဲ သုံးပါမည် — Gladia/Groq/AssemblyAI key မလိုအပ်ပါ။
+                            "Text to Speech" tab ရဲ့ Gemini API key pool ကိုပဲ ပြန်သုံးပါမည် — ဒီနေရာမှာ model list ကိုသာ သီးခြား ပြင်ပါ။ AI TRANSCRIBE (GEMINI) button ကလည်း ဒီ key pool + model list ကိုပဲ သုံးပါမည် — Gladia/Groq/AssemblyAI key လိုအပ်ပါ။
                         </p>
                         <div class="flex flex-wrap items-center gap-3 mt-2">
                             <button id="saveTimefixModelsBtn" class="px-4 py-2 rounded-lg bg-purple-600 hover:bg-purple-500 text-black font-orbitron font-bold text-xs tracking-widest transition-all">
@@ -770,11 +770,11 @@
                 </div>
                 <div class="grid grid-cols-2 gap-3 mb-4">
                     <div>
-                        <label class="block font-mono text-[10px] text-purple-300 uppercase tracking-widest mb-1.5">Chunk Size (s) <span class="text-purple-500/60 normal-case">— providers အားလုံး</span></label>
+                        <label class="block font-mono text-[10px] text-purple-300 uppercase tracking-widest mb-1.5">Chunk Size (s) <span class="text-purple-500/60 normal-case">— Gemini only</span></label>
                         <input type="number" id="transcribeChunkSize" value="60" min="15" max="300" class="w-full p-2 rounded bg-black/60 border border-purple-500/30 text-purple-100 font-mono text-xs focus:outline-none focus:border-pink-500/80">
                     </div>
                     <div>
-                        <label class="block font-mono text-[10px] text-purple-300 uppercase tracking-widest mb-1.5">Workers <span class="text-purple-500/60 normal-case">— providers အားလုံး</span></label>
+                        <label class="block font-mono text-[10px] text-purple-300 uppercase tracking-widest mb-1.5">Workers <span class="text-purple-500/60 normal-case">— Gemini only</span></label>
                         <input type="number" id="transcribeWorkerCount" value="3" min="1" max="6" class="w-full p-2 rounded bg-black/60 border border-purple-500/30 text-purple-100 font-mono text-xs focus:outline-none focus:border-pink-500/80">
                     </div>
                 </div>
@@ -782,7 +782,7 @@
                     <button id="clearTranscribeBtn" class="px-4 py-3 rounded-lg bg-black/40 hover:bg-red-950/50 border border-red-500/30 text-red-300 font-mono text-sm tracking-wider flex items-center justify-center gap-2 transition-all hover:border-red-400">
                         <i class="fa-solid fa-trash-can"></i><span>CLEAR</span>
                     </button>
-                    <button id="transcribeBtn" class="px-6 py-3 rounded-lg bg-gradient-to-r from-orange-600 via-pink-600 to-cyan-600 hover:from-orange-500 hover:to-cyan-500 text-white font-orbitron font-bold text-sm tracking-widest shadow-[0_0_20px_rgba(255,140,0,0.4)] hover:shadow-[0_0_30px_rgba(0,243,255,0.6)] flex items-center justify-center gap-3 transition-all transform hover:-translate-y-0.5" title="Gladia/Groq/AssemblyAI key pool — media ကို Chunk Size အလိုက်ခွဲပြီး Workers အရေအတွက်အတိုင်း တစ်ပြိုင်နက် pool ကိုပို့ကာ (auto-rotate ဆက်ပါ) original SRT ထုတ်ပေးပါမည်">
+                    <button id="transcribeBtn" class="px-6 py-3 rounded-lg bg-gradient-to-r from-orange-600 via-pink-600 to-cyan-600 hover:from-orange-500 hover:to-cyan-500 text-white font-orbitron font-bold text-sm tracking-widest shadow-[0_0_20px_rgba(255,140,0,0.4)] hover:shadow-[0_0_30px_rgba(0,243,255,0.6)] flex items-center justify-center gap-3 transition-all transform hover:-translate-y-0.5">
                         <i class="fa-solid fa-microphone-lines text-yellow-300 text-base"></i><span>TRANSCRIBE</span>
                     </button>
                     <button id="geminiTranscribeBtn" class="px-6 py-3 rounded-lg bg-gradient-to-r from-indigo-600 via-purple-600 to-pink-600 hover:from-indigo-500 hover:to-pink-500 text-white font-orbitron font-bold text-sm tracking-widest shadow-[0_0_20px_rgba(168,85,247,0.4)] hover:shadow-[0_0_30px_rgba(236,72,153,0.6)] flex items-center justify-center gap-3 transition-all transform hover:-translate-y-0.5" title="Gladia/Groq/AssemblyAI မလို — Gemini key ချည်းနဲ့သာ media ကို တိုက်ရိုက် ခွဲပြီး original SRT ထုတ်ပါမည်">
@@ -794,11 +794,7 @@
                 </div>
                 <p class="font-mono text-[10px] text-purple-400/70 mt-3">
                     <i class="fa-solid fa-circle-info mr-1"></i>
-                    TRANSCRIBE — media ကို browser ထဲမှာပဲ (Web Audio API) Chunk Size အလိုက် time-segment များအဖြစ်ခွဲပြီး Workers အရေအတွက်အတိုင်း တစ်ပြိုင်နက် Gladia/Groq/AssemblyAI key pool ကို ပို့ကာ (error/timeout ဖြစ်ရင် key/provider ကို auto-rotate ဆက်ပြီး) original SRT ကို ထုတ်ပေးပါမည်။
-                </p>
-                <p class="font-mono text-[10px] text-purple-400/70 mt-1.5">
-                    <i class="fa-solid fa-circle-info mr-1"></i>
-                    AI TRANSCRIBE (GEMINI) — အလားတူပင် Chunk Size / Workers ဖြင့် ခွဲပြီး တစ်ပြိုင်နက် ပို့ပါမည်၊ ဒါပေမဲ့ Gladia/Groq/AssemblyAI အစား "GEMINI MODEL LIST" panel ထဲက Gemini key pool ကိုသာ သုံးပါမည် (Gladia/Groq/AssemblyAI key မလိုအပ်ပါ)။
+                    AI TRANSCRIBE (GEMINI) — media ကို browser ထဲမှာပဲ (Web Audio API, ffmpeg မလို) Chunk Size အလိုက် time-segment များအဖြစ် ခွဲပြီး Workers အရေအတွက်အတိုင်း တစ်ပြိုင်နက် Gemini ကို ပို့ကာ original SRT ကို အစအဆုံး ထုတ်ပေးပါမည် — "GEMINI MODEL LIST" panel ထဲက key pool ကိုသုံးသည်။
                 </p>
             </div>
 

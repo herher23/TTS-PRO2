@@ -2225,17 +2225,6 @@ async function callAssemblyAiTranscribe(key, file, language, timeoutSec, onLog) 
 // =============================================================
 // Combined retry/rotate driver across the Gladia+Groq+AssemblyAI pool
 // =============================================================
-// Single dispatch point for "call whichever provider this credential belongs to" — shared
-// by both the whole-file path (transcribeMediaWithRotation, still used by AI Recap Studio)
-// and the chunked/parallel path below (transcribeChunkWithRotation), so both stay in sync.
-async function callProviderTranscribe(cred, file, language, timeoutSec, onLog) {
-    return cred.provider === 'groq'
-        ? await callGroqTranscribe(cred.key, file, language, timeoutSec)
-        : cred.provider === 'assemblyai'
-        ? await callAssemblyAiTranscribe(cred.key, file, language, timeoutSec, onLog)
-        : await callGladiaTranscribe(cred.key, file, language, timeoutSec, onLog);
-}
-
 async function transcribeMediaWithRotation(file, language, maxRetries, timeoutSec, onLog) {
     const pool = getTranscribeCredentialPool();
     if (pool.length === 0) throw new Error('Gladia/Groq/AssemblyAI API key မရှိပါ။');
@@ -2248,7 +2237,11 @@ async function transcribeMediaWithRotation(file, language, maxRetries, timeoutSe
         if (transcribeAborted) throw new Error('Stopped by user');
         onLog(`[${cred.provider.toUpperCase()}] attempt ${attempt + 1}/${totalAttempts} စတင်နေသည်...`);
         try {
-            const result = await callProviderTranscribe(cred, file, language, timeoutSec, onLog);
+            const result = cred.provider === 'groq'
+                ? await callGroqTranscribe(cred.key, file, language, timeoutSec)
+                : cred.provider === 'assemblyai'
+                ? await callAssemblyAiTranscribe(cred.key, file, language, timeoutSec, onLog)
+                : await callGladiaTranscribe(cred.key, file, language, timeoutSec, onLog);
             return { ...result, provider: cred.provider };
         } catch (e) {
             lastErr = e;
@@ -2260,119 +2253,6 @@ async function transcribeMediaWithRotation(file, language, maxRetries, timeoutSe
         }
     }
     throw lastErr || new Error('Gladia/Groq/AssemblyAI providers အားလုံး failed ဖြစ်သွားပါသည်');
-}
-
-// Same rotation logic as above, but scoped to ONE time-chunk — used by the chunked/parallel
-// TRANSCRIBE flow (transcribeMediaWithWorkers) so Chunk Size / Workers now drive Gladia/Groq/
-// AssemblyAI too, not just AI TRANSCRIBE (GEMINI). Shares the same round-robin pointer as the
-// whole-file path, so a key/provider that fails on one chunk is rotated past on the next too.
-async function transcribeChunkWithRotation(chunkFile, language, maxRetries, timeoutSec, onLog) {
-    const pool = getTranscribeCredentialPool();
-    if (pool.length === 0) throw new Error('Gladia/Groq/AssemblyAI API key မရှိပါ။');
-
-    const totalAttempts = Math.min(pool.length * Math.max(maxRetries, 1), 15);
-    let cred = nextTranscribeCredential();
-    let lastErr;
-
-    for (let attempt = 0; attempt < totalAttempts; attempt++) {
-        if (transcribeAborted) throw new Error('Stopped by user');
-        onLog(`[${cred.provider.toUpperCase()}] chunk attempt ${attempt + 1}/${totalAttempts}...`);
-        try {
-            const result = await callProviderTranscribe(cred, chunkFile, language, timeoutSec, onLog);
-            return { ...result, provider: cred.provider };
-        } catch (e) {
-            lastErr = e;
-            onLog(`[${cred.provider.toUpperCase()}] chunk error: ${e.message} — rotating...`, 'err');
-            if (transcribeAborted) throw new Error('Stopped by user');
-            cred = advanceTranscribeCredential();
-            if (!cred) break;
-            await sleep(retryBackoffMs(attempt));
-        }
-    }
-    throw lastErr || new Error('Gladia/Groq/AssemblyAI providers အားလုံး failed ဖြစ်သွားပါသည် (chunk)');
-}
-
-// Converts one chunk's transcription result (Gladia's ready-made srtDirect, or the
-// segments[] array Groq/AssemblyAI return) into a subs array with timestamps shifted onto
-// the FULL media timeline by that chunk's start offset — mirrors offsetSrtTimestamps() in
-// the Gemini chunked path further down, so both merge the same way.
-function offsetProviderChunkResult(result, offsetSec) {
-    if (result.srtDirect) return offsetSrtTimestamps(result.srtDirect, offsetSec);
-    return (result.segments || [])
-        .filter(seg => (seg.text || '').trim())
-        .map(seg => ({
-            timeLine: `${formatSrtTimestamp((seg.start || 0) + offsetSec)} --> ${formatSrtTimestamp((seg.end || 0) + offsetSec)}`,
-            textLines: [seg.text.trim()]
-        }));
-}
-
-// ---- Worker-pool driven multi-chunk transcription across Gladia/Groq/AssemblyAI ----
-// Same Web Audio decode/slice/resample pipeline and same worker-pool pattern as
-// geminiTranscribeWithWorkers below — the only difference is each chunk is sent through
-// transcribeChunkWithRotation (Gladia/Groq/AssemblyAI pool) instead of straight to Gemini.
-async function transcribeMediaWithWorkers(audioBuffer, chunkSizeSec, workerCount, language, maxRetries, timeoutSec, onLog) {
-    const timeChunks = buildTimeChunks(audioBuffer.duration, chunkSizeSec);
-    const results = new Array(timeChunks.length);
-    const providerCounts = {};
-
-    renderTranscribeWorkerGrid(Math.max(1, Math.min(workerCount, timeChunks.length || 1)));
-    updateTranscribeChunkProgress(0, timeChunks.length);
-    onLog(`Media ကို ${timeChunks.length} chunk (${chunkSizeSec}s စီ) အဖြစ် ခွဲပြီးပါပြီ — ${Math.min(workerCount, timeChunks.length)} worker ဖြင့် Gladia/Groq/AssemblyAI pool ကို တစ်ပြိုင်နက် စတင်နေသည်...`);
-
-    let cursor = 0;
-    let done = 0;
-
-    async function workerLoop(workerId) {
-        while (true) {
-            if (transcribeAborted) return;
-            const myIdx = cursor++;
-            if (myIdx >= timeChunks.length) return;
-            const { start, end } = timeChunks[myIdx];
-
-            setTranscribeWorkerStatus(workerId, 'busy', myIdx + 1, timeChunks.length);
-            onLog(`Worker ${workerId + 1} → chunk ${myIdx + 1}/${timeChunks.length} (${formatTime(start)}–${formatTime(end)}) စတင်နေသည်...`);
-
-            // Never give up on a chunk — a transient error (HTTP 503, timeout, etc.) just
-            // means this round failed; loop back and try the whole chunk again (re-slice,
-            // re-encode, re-send, rotating across the whole Gladia/Groq/AssemblyAI pool again)
-            // until it succeeds or the user hits Stop, instead of skipping it after maxRetries.
-            let chunkRound = 0;
-            while (true) {
-                if (transcribeAborted) return;
-                try {
-                    const sliceBuf = sliceAudioBuffer(audioBuffer, start, end);
-                    const resampled = await resampleTo16kMono(sliceBuf);
-                    const wavBlob = audioBufferToWavBlob(resampled);
-                    const chunkFile = new File([wavBlob], `chunk_${myIdx + 1}.wav`, { type: 'audio/wav' });
-                    if (transcribeAborted) return;
-                    const result = await transcribeChunkWithRotation(chunkFile, language, maxRetries, timeoutSec, onLog);
-                    results[myIdx] = offsetProviderChunkResult(result, start);
-                    providerCounts[result.provider] = (providerCounts[result.provider] || 0) + 1;
-                    setTranscribeWorkerStatus(workerId, 'done', myIdx + 1, timeChunks.length);
-                    onLog(`Chunk ${myIdx + 1}/${timeChunks.length} ပြီးပါပြီ ✓ (${result.provider.toUpperCase()}, cue ${results[myIdx].length} ခု)`, 'ok');
-                    break;
-                } catch (e) {
-                    if (transcribeAborted) return;
-                    chunkRound++;
-                    setTranscribeWorkerStatus(workerId, 'error', myIdx + 1, timeChunks.length);
-                    onLog(`Chunk ${myIdx + 1} error: ${e.message} — အောင်မြင်သည်အထိ ပြန်ကြိုးစားနေသည် (round ${chunkRound + 1})...`, 'err');
-                    await sleep(retryBackoffMs(chunkRound));
-                }
-            }
-
-            done++;
-            updateTranscribeChunkProgress(done, timeChunks.length);
-        }
-    }
-
-    const effectiveWorkers = Math.max(1, Math.min(workerCount, timeChunks.length || 1));
-    const workerPool = [];
-    for (let i = 0; i < effectiveWorkers; i++) workerPool.push(workerLoop(i));
-    await Promise.all(workerPool);
-
-    const mergedSubs = [];
-    results.forEach(r => { if (r) mergedSubs.push(...r); });
-    return { srt: mergedSubs.length ? rebuildSrt(mergedSubs) : '', providerCounts };
 }
 
 // =============================================================
@@ -2396,8 +2276,6 @@ async function handleTranscribeMedia() {
     const language = transcribeLangSelect.value;
     const maxRetries = Math.max(parseInt(transcribeMaxRetriesInput.value, 10) || 2, 1);
     const timeoutSec = Math.max(parseInt(transcribeTimeoutSecInput.value, 10) || 120, 10);
-    const chunkSizeSec = Math.max(parseInt(transcribeChunkSizeInput.value, 10) || 60, 15);
-    const workerCount = Math.max(parseInt(transcribeWorkerCountInput.value, 10) || 3, 1);
 
     transcribeBtn.disabled = true;
     transcribeBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin mr-2"></i><span>TRANSCRIBING...</span>';
@@ -2411,34 +2289,29 @@ async function handleTranscribeMedia() {
     transcribeOutput.value = '';
     transcribeStatusBadge.textContent = 'RUNNING';
 
-    logTranscribe(`ဖိုင် "${selectedMediaFile.name}" (${formatBytes(selectedMediaFile.size)}) ကို Chunk Size: ${chunkSizeSec}s / Workers: ${workerCount} ဖြင့် Gladia/Groq/AssemblyAI pool ကို transcribe စတင်နေသည်...`);
+    logTranscribe(`ဖိုင် "${selectedMediaFile.name}" (${formatBytes(selectedMediaFile.size)}) ကို transcribe စတင်နေသည်...`);
 
     try {
-        logTranscribe('Audio track ကို browser ထဲမှာ decode လုပ်နေသည်...');
-        const audioBuffer = await decodeMediaToAudioBuffer(selectedMediaFile);
-        logTranscribe(`Decode ပြီးပါပြီ — Duration: ${formatTime(audioBuffer.duration)}`, 'ok');
-
-        const { srt, providerCounts } = await transcribeMediaWithWorkers(audioBuffer, chunkSizeSec, workerCount, language, maxRetries, timeoutSec, (msg, lvl) => logTranscribe(msg, lvl));
+        const result = await transcribeMediaWithRotation(selectedMediaFile, language, maxRetries, timeoutSec, (msg, lvl) => logTranscribe(msg, lvl));
 
         if (transcribeAborted) {
             logTranscribe('User မှ ရပ်တန့်လိုက်ပါသည်။', 'warn');
         }
 
-        const subsForText = parseSrt(srt);
-        const providerSummary = Object.entries(providerCounts).map(([p, c]) => `${p.toUpperCase()}:${c}`).join(' ') || 'N/A';
+        const srt = result.srtDirect || segmentsToSrt(result.segments);
         currentTranscribeResult = {
             srt: srt || '(No timestamped segments returned — see TXT tab)',
-            fullText: subsForText.map(s => s.textLines.join(' ')).join('\n'),
-            jsonStr: JSON.stringify({ note: 'Generated via TRANSCRIBE — chunked across Gladia/Groq/AssemblyAI pool', chunkSizeSec, workerCount, providerCounts, cues: subsForText.length }, null, 2),
-            provider: providerSummary,
+            fullText: result.fullText || '',
+            jsonStr: JSON.stringify(result.raw, null, 2),
+            provider: result.provider,
             sourceFileName: selectedMediaFile.name
         };
 
         renderTranscribeOutput();
-        transcribeOutputMeta.textContent = `Provider: ${providerSummary} (chunked) | Segments: ${subsForText.length} | Characters: ${currentTranscribeResult.fullText.length}`;
+        transcribeOutputMeta.textContent = `Provider: ${result.provider.toUpperCase()} | Segments: ${result.segments.length} | Characters: ${currentTranscribeResult.fullText.length}`;
         transcribeDoneBadge.classList.remove('hidden');
         transcribeStatusBadge.textContent = 'DONE';
-        logTranscribe(`Transcription ပြီးဆုံးပါပြီ ✓ (${providerSummary})`, 'ok');
+        logTranscribe(`Transcription ပြီးဆုံးပါပြီ ✓ (${result.provider.toUpperCase()})`, 'ok');
 
     } catch (err) {
         console.error('Transcription Error:', err);
@@ -2951,31 +2824,20 @@ async function geminiTranscribeWithWorkers(audioBuffer, chunkSizeSec, workerCoun
             setTranscribeWorkerStatus(workerId, 'busy', myIdx + 1, timeChunks.length);
             onLog(`Worker ${workerId + 1} → chunk ${myIdx + 1}/${timeChunks.length} (${formatTime(start)}–${formatTime(end)}) စတင်နေသည်...`);
 
-            // Never give up on a chunk — a transient error (HTTP 503, timeout, etc.) just
-            // means this round failed; loop back and try the whole chunk again (re-slice,
-            // re-encode, re-send) until it succeeds or the user hits Stop. This replaces the
-            // old behaviour of skipping the chunk (leaving a gap in the SRT) after maxRetries.
-            let chunkRound = 0;
-            while (true) {
+            try {
+                const sliceBuf = sliceAudioBuffer(audioBuffer, start, end);
+                const resampled = await resampleTo16kMono(sliceBuf);
+                const wavBlob = audioBufferToWavBlob(resampled);
+                const wavBase64 = await blobToBase64(wavBlob);
                 if (transcribeAborted) return;
-                try {
-                    const sliceBuf = sliceAudioBuffer(audioBuffer, start, end);
-                    const resampled = await resampleTo16kMono(sliceBuf);
-                    const wavBlob = audioBufferToWavBlob(resampled);
-                    const wavBase64 = await blobToBase64(wavBlob);
-                    if (transcribeAborted) return;
-                    const rawSrt = await callGeminiTranscribeChunk(wavBase64, myIdx, timeChunks.length, languageHint, maxRetries, timeoutSec, onLog);
-                    results[myIdx] = rawSrt ? offsetSrtTimestamps(rawSrt, start) : [];
-                    setTranscribeWorkerStatus(workerId, 'done', myIdx + 1, timeChunks.length);
-                    onLog(`Chunk ${myIdx + 1}/${timeChunks.length} ပြီးပါပြီ ✓ (cue ${results[myIdx].length} ခု)`, 'ok');
-                    break;
-                } catch (e) {
-                    if (transcribeAborted) return;
-                    chunkRound++;
-                    setTranscribeWorkerStatus(workerId, 'error', myIdx + 1, timeChunks.length);
-                    onLog(`Chunk ${myIdx + 1} error: ${e.message} — အောင်မြင်သည်အထိ ပြန်ကြိုးစားနေသည် (round ${chunkRound + 1})...`, 'err');
-                    await sleep(retryBackoffMs(chunkRound));
-                }
+                const rawSrt = await callGeminiTranscribeChunk(wavBase64, myIdx, timeChunks.length, languageHint, maxRetries, timeoutSec, onLog);
+                results[myIdx] = rawSrt ? offsetSrtTimestamps(rawSrt, start) : [];
+                setTranscribeWorkerStatus(workerId, 'done', myIdx + 1, timeChunks.length);
+                onLog(`Chunk ${myIdx + 1}/${timeChunks.length} ပြီးပါပြီ ✓ (cue ${results[myIdx].length} ခု)`, 'ok');
+            } catch (e) {
+                results[myIdx] = [];
+                setTranscribeWorkerStatus(workerId, 'error', myIdx + 1, timeChunks.length);
+                onLog(`Chunk ${myIdx + 1} error: ${e.message} (ဤအပိုင်းကို ကျော်သွားပါမည်)`, 'err');
             }
 
             done++;
@@ -3676,35 +3538,19 @@ const logRecap = makeLogger(recapLogBox);
 // Main "ONE CLICK GENERATE" handler
 // =============================================================
 async function handleGenerateRecap() {
-    if (isRecapProcessing) return;
-
-    // Show the progress panel / log box FIRST, before any validation check below — it used
-    // to stay hidden (class="hidden" in the HTML) until after these checks passed, so a
-    // missing file or missing key just logged an invisible line into a hidden box and the
-    // button looked like it did nothing at all. Now every outcome (including validation
-    // errors) is visible on screen.
-    recapProgressPanel.classList.remove('hidden');
-    recapLogBox.innerHTML = '';
-    recapDoneBadge.classList.add('hidden');
-    recapOutput.value = '';
-    recapStatusBadge.textContent = 'CHECKING';
-
     if (!selectedRecapFile) {
-        recapStatusBadge.textContent = 'FAILED';
-        logRecap('ERROR: မီဒီယာဖိုင် ရွေးရန်လိုအပ်ပါသည် — ဒီ "AI RECAP STUDIO" tab ပေါ်ရှိ dropzone တွင် ဖိုင်ကို ထပ်မံရွေးပါ (Transcribe tab ကို upload ထားခြင်းက Recap tab ကို ကူးမပေးပါ — tab နှစ်ခုစလုံး ဖိုင်သီးခြားစီ upload ပါလုပ်ရပါမည်)', 'err');
+        logRecap('ERROR: မီဒီယာဖိုင် ရွေးရန်လိုအပ်ပါသည်', 'err');
         return;
     }
     if (getTranscribeCredentialPool().length === 0) {
-        recapStatusBadge.textContent = 'FAILED';
-        logRecap('ERROR: Gladia/Groq/AssemblyAI API key မရှိပါ — "မီဒီယာ → SRT" tab ရဲ့ Key Pool panel တွင် key ထည့်ပြီး SAVE KEYS နှိပ်ထားရန် လိုအပ်ပါသည်', 'err');
+        logRecap('ERROR: Gladia/Groq/AssemblyAI API key မရှိပါ — "မီဒီယာ → SRT" tab ရဲ့ Key Pool panel တွင် key ထည့်ပါ', 'err');
         return;
     }
     if (getKeys().length === 0) {
-        recapStatusBadge.textContent = 'FAILED';
-        logRecap('ERROR: Gemini API key မရှိပါ — "Text to Speech" tab ရဲ့ Key & Model Rotation panel တွင် key ထည့်ပြီး သိမ်းထားရန် လိုအပ်ပါသည်', 'err');
+        logRecap('ERROR: Gemini API key မရှိပါ — "Text to Speech" tab ရဲ့ Key panel တွင် key ထည့်ပါ', 'err');
         return;
     }
-
+    if (isRecapProcessing) return;
     isRecapProcessing = true;
     recapAborted = false;
     transcribeAborted = false; // shared flag used by the reused transcription pipeline below
@@ -3717,6 +3563,10 @@ async function handleGenerateRecap() {
     generateRecapBtn.disabled = true;
     generateRecapBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin mr-2"></i><span>PROCESSING...</span>';
     stopRecapBtn.disabled = false;
+    recapDoneBadge.classList.add('hidden');
+    recapProgressPanel.classList.remove('hidden');
+    recapLogBox.innerHTML = '';
+    recapOutput.value = '';
     recapStatusBadge.textContent = 'TRANSCRIBING';
 
     logRecap(`ဖိုင် "${selectedRecapFile.name}" (${formatBytes(selectedRecapFile.size)}) — ONE CLICK စတင်နေသည်...`);
