@@ -588,12 +588,15 @@
                             ဘာသာပြန်ပြီး SRT <span id="outputDoneBadge" class="text-xs font-mono text-emerald-400/90 font-normal hidden">✓ DONE</span>
                         </h2>
                     </div>
-                    <div class="flex gap-2">
+                    <div class="flex gap-2 flex-wrap">
                         <button id="copySrtBtn" class="px-3 py-1.5 rounded-lg bg-black/50 border border-cyan-500/40 text-cyan-300 font-mono text-xs hover:border-cyan-300 transition-all">
                             <i class="fa-solid fa-copy mr-1"></i> Copy
                         </button>
                         <button id="downloadSrtBtn" class="px-3 py-1.5 rounded-lg bg-cyan-600 hover:bg-cyan-500 text-black font-mono text-xs font-bold transition-all">
                             <i class="fa-solid fa-download mr-1"></i> Download
+                        </button>
+                        <button id="downloadMmSubBtn" title="Myanmar စာသားကို Zawgyi ပြောင်းပြီး mmsub-style player များအတွက် .srt ချစပါမည် (number/timestamp မပြောင်းပါ)" class="px-3 py-1.5 rounded-lg bg-black/50 border border-fuchsia-500/40 text-fuchsia-300 font-mono text-xs hover:border-fuchsia-300 transition-all">
+                            <i class="fa-solid fa-file-export mr-1"></i> MMSub SRT (Zawgyi)
                         </button>
                     </div>
                 </div>
@@ -617,6 +620,9 @@
                     </button>
                     <button id="checkUntranslatedBtn" class="px-3 py-1.5 rounded-lg bg-black/50 border border-yellow-500/40 text-yellow-300 font-mono text-xs hover:border-yellow-300 transition-all flex items-center gap-1.5">
                         <i class="fa-solid fa-language"></i> ဘာသာမပြန်ရသေးတာ CHECK
+                    </button>
+                    <button id="retryUntranslatedBtn" class="px-3 py-1.5 rounded-lg bg-yellow-600/90 hover:bg-yellow-500 border border-yellow-400/60 text-black font-mono text-xs font-bold transition-all flex items-center gap-1.5">
+                        <i class="fa-solid fa-rotate-right"></i> ကျန်တာပြန်ဘာသာပြန်ရန် (RETRY)
                     </button>
                 </div>
                 <div id="srtCheckResultsBox" class="hidden mt-2 h-32 overflow-y-auto bg-black/60 border border-purple-500/20 rounded-lg p-2 font-mono text-[10px] space-y-0.5"></div>

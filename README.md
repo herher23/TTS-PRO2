@@ -37,10 +37,19 @@ runs the whole pipeline in one click.
      natural subtitle lines, remove duplicate/overlapping timestamps, and renumber cues.
      Also chunked for long transcripts.
 2. **SRT Translator** — paste/open an original `.srt`, pick a target language, and it
-   translates every subtitle line via the Gemini API while preserving timestamps (subtitle
-   index numbers are renumbered sequentially in the rebuilt output, not preserved verbatim).
-   Multi-key + multi-model rotation, multiple parallel workers, retry/timeout controls, and
-   an optional glossary (find/replace) applied to the output.
+   translates every subtitle line via the Gemini API while preserving both the timestamps
+   **and the original cue numbers** verbatim — cue `651` in the source stays cue `651` in
+   the output, it is never renumbered. Multi-key + multi-model rotation, multiple parallel
+   workers, retry/timeout controls, and an optional glossary (find/replace) applied to the
+   output. The output panel's "ဘာသာမပြန်ရသေးတာ CHECK" button flags any cue still sitting on
+   untranslated text; a "RETRY" button next to it re-sends just those flagged cues for
+   translation (instead of re-running the whole file) and updates the output in place. A
+   separate "MMSub SRT (Zawgyi)" button re-encodes the Myanmar dialogue text to the legacy
+   Zawgyi-One font encoding used by older Myanmar subtitle players (MMSubLite/MMSubPlay-style
+   apps) and downloads it as `<filename>.mmsub.srt` — cue numbers/timestamps are untouched,
+   only the glyph encoding of the dialogue text changes. Zawgyi conversion is rule-based and
+   best-effort (even the reference converter it's adapted from doesn't claim 100% accuracy on
+   every edge case), so spot-check unusual text in your target player.
 3. **Text → Speech** — the original Neural TTS engine: multi-key/model rotation, 8 voice
    presets, speed control, clarity boost, live spectrum/waveform visualizer, a STOP button
    to cancel an in-flight generation, and WAV download. Reachable from the Translator or

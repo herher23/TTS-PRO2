@@ -1039,7 +1039,9 @@ const srtOutput = document.getElementById('srtOutput');
 const srtOutputMeta = document.getElementById('srtOutputMeta');
 const checkTimestampsOutputBtn = document.getElementById('checkTimestampsOutputBtn');
 const checkUntranslatedBtn = document.getElementById('checkUntranslatedBtn');
+const retryUntranslatedBtn = document.getElementById('retryUntranslatedBtn');
 const srtCheckResultsBox = document.getElementById('srtCheckResultsBox');
+const downloadMmSubBtn = document.getElementById('downloadMmSubBtn');
 const sendToTtsBtn = document.getElementById('sendToTtsBtn');
 
 // ---- Translator-only state ----
@@ -1150,8 +1152,13 @@ function parseSrt(rawText) {
         if (lines.length < 2) { droppedCount++; return; }
         let li = 0;
 
-        // Optional leading numeric index line
+        // Optional leading numeric index line — captured verbatim as originalIndex so
+        // later stages (Translator output, MMSub export) can re-emit the SAME cue
+        // number instead of silently renumbering from 1. Kept as a string (not parsed
+        // to int) so we never reformat a source file's own numbering scheme.
+        let originalIndex = null;
         if (/^\d+$/.test(lines[li].trim())) {
+            originalIndex = lines[li].trim();
             li++;
         }
         if (!lines[li] || !lines[li].includes('-->')) { droppedCount++; return; } // malformed cue, skip
@@ -1161,7 +1168,7 @@ function parseSrt(rawText) {
         const textLines = lines.slice(li).filter((l, i, arr) => !(i === arr.length - 1 && l.trim() === ''));
         if (textLines.length === 0) { droppedCount++; return; }
 
-        subs.push({ timeLine, textLines });
+        subs.push({ timeLine, textLines, originalIndex });
     });
 
     subs.droppedCount = droppedCount;
@@ -1169,12 +1176,20 @@ function parseSrt(rawText) {
     return subs;
 }
 
-function rebuildSrt(subs) {
+// preserveIndex=true re-emits each cue's ORIGINAL SRT number (captured by parseSrt
+// above) instead of renumbering 1..N sequentially. Used by the Translator output and
+// the MMSub export, which keep the exact same set/order of cues as the source SRT —
+// so "cue 651" stays "651" instead of becoming "1", matching its original timestamp.
+// Tools that merge or split cues (Transcribe merge, AI SRT Format) still renumber
+// sequentially by omitting this flag, since the cue count itself changes there and an
+// "original" number wouldn't line up with anything in the rebuilt output anyway.
+function rebuildSrt(subs, { preserveIndex = false } = {}) {
     return subs.map((s, i) => {
         const text = (s.translatedText !== undefined && s.translatedText !== null)
             ? s.translatedText
             : s.textLines.join('\n');
-        return `${i + 1}\n${s.timeLine}\n${text}`;
+        const num = (preserveIndex && s.originalIndex) ? s.originalIndex : (i + 1);
+        return `${num}\n${s.timeLine}\n${text}`;
     }).join('\n\n') + '\n';
 }
 
@@ -1561,25 +1576,26 @@ function checkSrtTimestamps(subs, mediaDurationSec = null) {
     subs.forEach((s, i) => {
         const parts = s.timeLine.split('-->').map(p => p.trim());
         if (parts.length !== 2) {
-            issues.push(`#${i + 1}: timestamp line format မှားနေသည် — "${s.timeLine}"`);
+            issues.push(`#${s.originalIndex || (i + 1)}: timestamp line format မှားနေသည် — "${s.timeLine}"`);
             return;
         }
         const startMs = parseSrtTimestampToMs(parts[0]);
         const endMs = parseSrtTimestampToMs(parts[1]);
+        const num = s.originalIndex || (i + 1);
         if (startMs === null || endMs === null) {
-            issues.push(`#${i + 1}: timestamp format မှန်ကန်မှုမရှိပါ (HH:MM:SS,mmm ဖြစ်ရပါမည်) — "${s.timeLine}"`);
+            issues.push(`#${num}: timestamp format မှန်ကန်မှုမရှိပါ (HH:MM:SS,mmm ဖြစ်ရပါမည်) — "${s.timeLine}"`);
             return;
         }
         if (endMs <= startMs) {
-            issues.push(`#${i + 1}: အဆုံးအချိန်သည် အစချိန်ထက် စောနေသည်/တူနေသည် — "${s.timeLine}"`);
+            issues.push(`#${num}: အဆုံးအချိန်သည် အစချိန်ထက် စောနေသည်/တူနေသည် — "${s.timeLine}"`);
         }
         if (prevEndMs !== -1 && startMs < prevEndMs) {
-            issues.push(`#${i + 1}: ရှေ့ subtitle နှင့် timestamp ထပ်နေသည် (overlap) — "${s.timeLine}"`);
+            issues.push(`#${num}: ရှေ့ subtitle နှင့် timestamp ထပ်နေသည် (overlap) — "${s.timeLine}"`);
         }
         if (durationMs !== null && startMs > durationMs) {
-            issues.push(`#${i + 1}: media အရှည် (${formatSrtTimestamp(durationMs / 1000)}) ထက်ကျော်ပြီးမှ subtitle စတင်နေသည် — "${s.timeLine}"`);
+            issues.push(`#${num}: media အရှည် (${formatSrtTimestamp(durationMs / 1000)}) ထက်ကျော်ပြီးမှ subtitle စတင်နေသည် — "${s.timeLine}"`);
         } else if (durationMs !== null && endMs > durationMs) {
-            issues.push(`#${i + 1}: media အရှည် (${formatSrtTimestamp(durationMs / 1000)}) ကျော်၍ အဆုံးသတ်နေသည် — "${s.timeLine}"`);
+            issues.push(`#${num}: media အရှည် (${formatSrtTimestamp(durationMs / 1000)}) ကျော်၍ အဆုံးသတ်နေသည် — "${s.timeLine}"`);
         }
         prevEndMs = Math.max(prevEndMs, endMs);
     });
@@ -1596,10 +1612,20 @@ function checkUntranslatedLines(subs) {
         const translated = (s.translatedText !== undefined && s.translatedText !== null) ? String(s.translatedText).trim() : '';
         if (s.translationFailed || (translated && translated === original)) {
             const preview = original.length > 60 ? original.slice(0, 60) + '…' : original;
-            issues.push(`#${i + 1} [${s.timeLine.split('-->')[0].trim()}]: "${preview}"`);
+            issues.push(`#${s.originalIndex || (i + 1)} [${s.timeLine.split('-->')[0].trim()}]: "${preview}"`);
         }
     });
     return issues;
+}
+
+// Same test checkUntranslatedLines uses, exposed separately so the RETRY button can
+// pull out the actual sub objects (not just format a message about them).
+function findUntranslatedSubs(subs) {
+    return subs.filter(s => {
+        const original = s.textLines.join('\n').trim();
+        const translated = (s.translatedText !== undefined && s.translatedText !== null) ? String(s.translatedText).trim() : '';
+        return s.translationFailed || (translated && translated === original);
+    });
 }
 
 // targetBox defaults to the Translator tab's results box so this stays a drop-in
@@ -1654,6 +1680,73 @@ checkUntranslatedBtn.addEventListener('click', () => {
     }
     const issues = checkUntranslatedLines(lastTranslatedSubs);
     renderCheckResults(`ဘာသာမပြန်ရသေးသော lines — ${lastTranslatedSubs.length} lines စစ်ဆေးပြီး`, issues, 'အားလုံး ဘာသာပြန်ပြီးပါပြီ');
+});
+
+// =============================================================
+// RETRY: re-translate only the cues still sitting on untranslated text.
+// Re-uses the SAME sub objects that live inside lastTranslatedSubs (not copies) —
+// translateSrtWithWorkers mutates sub.translatedText/sub.translationFailed in place,
+// so running it over just this filtered subset automatically updates them inside
+// lastTranslatedSubs too, with everything else in the SRT left untouched.
+// =============================================================
+let isRetryingUntranslated = false;
+
+retryUntranslatedBtn.addEventListener('click', async () => {
+    if (isTranslating || isRetryingUntranslated) return;
+
+    if (!lastTranslatedSubs || lastTranslatedSubs.length === 0) {
+        showCheckNotice('Translate လုပ်ပြီးမှသာ ဒီ retry ကို လုပ်နိုင်ပါသည်');
+        return;
+    }
+    const failedSubs = findUntranslatedSubs(lastTranslatedSubs);
+    if (failedSubs.length === 0) {
+        showCheckNotice('ပြန်ဘာသာပြန်ရန် ကျန်နေသော line မရှိပါ — အားလုံး ဘာသာပြန်ပြီးပါပြီ');
+        return;
+    }
+    if (getKeys().length === 0) {
+        logTrans('ERROR: API key မရှိပါ — "Text to Speech" tab ထဲက Key panel တွင် key ထည့်ပါ', 'err');
+        return;
+    }
+
+    isRetryingUntranslated = true;
+    translationAborted = false;
+    retryUntranslatedBtn.disabled = true;
+    retryUntranslatedBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> RETRYING...';
+    stopTranslateBtn.disabled = false;
+    transProgressPanel.classList.remove('hidden');
+
+    const chunkSize = Math.max(parseInt(chunkSizeInput.value, 10) || 30, 1);
+    const maxRetries = Math.max(parseInt(maxRetriesInput.value, 10) || 3, 1);
+    const timeoutSec = Math.max(parseInt(timeoutSecInput.value, 10) || 60, 5);
+    const workerCount = Math.max(parseInt(workerCountInput.value, 10) || 3, 1);
+    const targetLang = targetLangSelect.value;
+
+    logTrans(`ဘာသာမပြန်ရသေးသော cue ${failedSubs.length} ခုကို ပြန်ကြိုးစားနေသည်...`, 'warn');
+
+    try {
+        await translateSrtWithWorkers(failedSubs, chunkSize, targetLang, workerCount, maxRetries, timeoutSec);
+
+        const outputSrt = rebuildSrt(lastTranslatedSubs, { preserveIndex: true });
+        srtOutput.value = outputSrt;
+        srtOutputMeta.textContent = `Subtitles: ${lastTranslatedSubs.length} | Characters: ${outputSrt.length}`;
+
+        const remaining = checkUntranslatedLines(lastTranslatedSubs);
+        renderCheckResults(`ဘာသာမပြန်ရသေးသော lines — ${lastTranslatedSubs.length} lines စစ်ဆေးပြီး`, remaining, 'အားလုံး ဘာသာပြန်ပြီးပါပြီ');
+
+        if (remaining.length === 0) {
+            logTrans('ကျန်နေသော line များ အားလုံး ဘာသာပြန်ပြီးပါပြီ ✓', 'ok');
+        } else {
+            logTrans(`ပြန်ကြိုးစားပြီးနောက် line ${remaining.length} ခု ဆက်ကျန်နေပါသည် — ထပ် RETRY နှိပ်နိုင်ပါသည်`, 'warn');
+        }
+    } catch (err) {
+        console.error('Retry Untranslated Error:', err);
+        logTrans(`FAILED: ${err.message}`, 'err');
+    } finally {
+        isRetryingUntranslated = false;
+        retryUntranslatedBtn.disabled = false;
+        retryUntranslatedBtn.innerHTML = '<i class="fa-solid fa-rotate-right"></i> ကျန်တာပြန်ဘာသာပြန်ရန် (RETRY)';
+        stopTranslateBtn.disabled = true;
+    }
 });
 
 
@@ -1721,7 +1814,7 @@ async function handleTranslateSrt() {
         }
 
         lastTranslatedSubs = translatedSubs;
-        const outputSrt = rebuildSrt(translatedSubs);
+        const outputSrt = rebuildSrt(translatedSubs, { preserveIndex: true });
         srtOutput.value = outputSrt;
         srtOutputMeta.textContent = `Subtitles: ${translatedSubs.length} | Characters: ${outputSrt.length}`;
         if (!srtOutputFilenameInput.value.trim()) {
@@ -1782,6 +1875,103 @@ downloadSrtBtn.addEventListener('click', () => {
     a.click();
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
+});
+
+// =============================================================
+// SRT → MMSub SRT (Zawgyi) export
+// -------------------------------------------------------------
+// Older/lightweight Myanmar subtitle players — the "MMSub"-style apps common on
+// Android (MMSubLite, MMSubPlay and similar) — were built before Myanmar Unicode
+// was standard, and only display Myanmar glyphs correctly in the legacy Zawgyi-One
+// encoding. Gemini always returns standard Unicode, so this pass re-encodes just the
+// dialogue text to Zawgyi for those players. Cue numbers and timestamps are copied
+// through byte-for-byte from the Unicode output (same preserveIndex numbering as the
+// regular download) — only the Myanmar glyphs themselves change.
+//
+// Rule table adapted from the "Rabbit" Unicode<->Zawgyi converter (WTFPL license,
+// rabbit-converter.github.io/Rabbit) — a long-standing, widely reused reference
+// implementation. Zawgyi conversion is inherently a best-effort, rule-based process
+// (its own author notes it "cannot promise 100%" on every edge case), so it's worth
+// spot-checking unusual text in your target player.
+// =============================================================
+const UNICODE_TO_ZAWGYI_RULES = [
+    { from: 'င်္', to: 'ၤ' }, { from: '္တွ', to: '႖' }, { from: 'ါ်', to: 'ၚ' },
+    { from: 'ဋ္ဌ', to: '႒' }, { from: 'ိံ', to: 'ႎ' }, { from: '၎င်း', to: '၎' },
+    { from: '[ဥဉ](?=[္ုူ])', to: 'ၪ' }, { from: '[ဥဉ](?=[့]?[်])', to: 'ဥ' },
+    { from: 'ည(?=[္ွ])', to: 'ၫ' }, { from: '(္[က-အ])(ိ){0,1}ု', to: '$1$2ဳ' },
+    { from: '(္[က-အ])ူ', to: '$1ဴ' }, { from: 'န(?=[ိီ]?[ူွှု္])', to: 'ႏ' },
+    { from: 'နြ', to: 'ႏြ' }, { from: '္က', to: 'ၠ' }, { from: '္ခ', to: 'ၡ' },
+    { from: '္ဂ', to: 'ၢ' }, { from: '္ဃ', to: 'ၣ' }, { from: '္စ', to: 'ၥ' },
+    { from: '္ဆ', to: 'ၦ' }, { from: '္ဇ', to: 'ၨ' }, { from: '္ဈ', to: 'ၩ' },
+    { from: '္ဋ', to: 'ၬ' }, { from: '္ဌ', to: 'ၭ' }, { from: 'ဍ္ဍ', to: 'ၮ' },
+    { from: 'ဎ္ဍ', to: 'ၯ' }, { from: '္ဏ', to: 'ၰ' }, { from: '္တ', to: 'ၱ' },
+    { from: '္ထ', to: 'ၳ' }, { from: '္ဒ', to: 'ၵ' }, { from: '္ဓ', to: 'ၶ' },
+    { from: '္[နႏ]', to: 'ၷ' }, { from: '္ပ', to: 'ၸ' }, { from: '္ဖ', to: 'ၹ' },
+    { from: '္ဗ', to: 'ၺ' }, { from: '္ဘ', to: 'ၻ' }, { from: '္မ', to: 'ၼ' },
+    { from: '္လ', to: 'ႅ' }, { from: 'ဿ', to: 'ႆ' }, { from: 'ွှ', to: 'ႊ' },
+    { from: '(ၤ)([က-အ])([ျြ]?)ိ', to: '$2$3ႋ' }, { from: '(ၤ)([က-အ])([ျြ]?)ီ', to: '$2$3ႌ' },
+    { from: '(ၤ)([က-အ])([ျြ]?)ံ', to: '$2$3ႍ' }, { from: '(ၤ)([က-အ])([ျြ]?)([ေ]?)', to: '$2$3$4$1' },
+    { from: 'ရ(?=([ိီ]?)[ုူွႊ])', to: '႐' }, { from: 'ဏ္ဍ', to: '႑' }, { from: 'ဋ္ဋ', to: '႗' },
+    { from: '([က-အႏဩ႐])([ၠ-ၩၬၭၰ-ၼႅႊ])?([ျ-ှ]*)?ေ', to: 'ေ$1$2$3' }, { from: 'ြှ', to: 'ြႇ' },
+    { from: '([က-အႏဩ])([ၠ-ၩၬၭၰ-ၼႅ])?(ြ)', to: '$3$1$2' }, { from: '်', to: '္' },
+    { from: 'ျ', to: '်' }, { from: 'ြ', to: 'ျ' }, { from: 'ွ', to: 'ြ' }, { from: 'ှ', to: 'ွ' },
+    { from: '([^်ည])ွ([ိီ]?)ု', to: '$1ႈ$2' },
+    { from: '([ရ်ြႊႈ႐])([ူွ])?([ဲံ္ိီႋႌႍႎ]?)(ု)?့', to: '$1$2$3$4႕' },
+    { from: '([ုနူွ])([ဲံ္ိီႋႌႍႎ]?)့', to: '$1$2႔' },
+    { from: '([ျ])([က-အ])([ႇ]?)([ံိီႋႌႍႎ]?)ု', to: '$1$2$3$4ဳ' },
+    { from: '([ျ])([က-အ])([ႇ]?)([ံိီႋႌႍႎ]?)ူ', to: '$1$2$3$4ဴ' },
+    { from: '([်ြညဠဥ])([ွ]?)([ံိီႋႌႍႎ]?)ု', to: '$1$2$3ဳ' },
+    { from: '([်ြညရ])(ွ?)([ံိီႋႌႍႎ]?)ူ', to: '$1$2$3ဴ' },
+    { from: 'ညွ', to: 'ညႇ' }, { from: 'ွူ', to: 'ႉ' },
+    { from: 'ျ([ကဃဆဏတထဘယလယသဟ])', to: 'ၾ$1' },
+    { from: 'ၾ([ကဃဆဏတထဘယလယသဟ])([ြႊ])([ဲံိီႋႌႍႎ])', to: 'ႄ$1$2$3' },
+    { from: 'ၾ([ကဃဆဏတထဘယလယသဟ])([ြႊ])', to: 'ႂ$1$2' },
+    { from: 'ၾ([ကဃဆဏတထဘယလယသဟ])([ဳဴ]?)([ဲံိီႋႌႍႎ])', to: 'ႀ$1$2$3' },
+    { from: 'ျ([က-အ])([ြႊ])([ဲံိီႋႌႍႎ])', to: 'ႃ$1$2$3' }, { from: 'ျ([က-အ])([ြႊ])', to: 'ႁ$1$2' },
+    { from: 'ျ([က-အ])([ဳဴ]?)([ဲံိီႋႌႍႎ])', to: 'ၿ$1$2$3' }, { from: '်ွ', to: 'ွ်' },
+    { from: '်([ြႊ])', to: '$1ၽ' }, { from: '([ဳဴ])႔', to: '$1႕' }, { from: 'ႏၱ', to: 'ႏၲ' },
+    { from: '([က-အ])([ၻၦ])ာ', to: '$1ာ$2' }, { from: 'ာ([ၻၦ])့', to: 'ာ$1႔' },
+];
+
+function unicodeToZawgyi(text) {
+    let out = text;
+    for (const { from, to } of UNICODE_TO_ZAWGYI_RULES) {
+        out = out.replace(new RegExp(from, 'g'), to);
+    }
+    return out;
+}
+
+// Rebuilds an already-Unicode SRT into an MMSub/Zawgyi one. Only the dialogue text
+// (s.textLines) is re-encoded — the cue number and timeLine are copied through
+// unchanged, exactly like rebuildSrt's own preserveIndex path.
+function convertSrtToMmSub(unicodeSrtText) {
+    const subs = parseSrt(unicodeSrtText);
+    return subs.map((s, i) => {
+        const num = s.originalIndex || (i + 1);
+        const sourceText = (s.translatedText !== undefined && s.translatedText !== null)
+            ? s.translatedText
+            : s.textLines.join('\n');
+        return `${num}\n${s.timeLine}\n${unicodeToZawgyi(sourceText)}`;
+    }).join('\n\n') + '\n';
+}
+
+downloadMmSubBtn.addEventListener('click', () => {
+    if (!srtOutput.value) return;
+    const mmSubSrt = convertSrtToMmSub(srtOutput.value);
+    const typed = sanitizeSrtFileName(srtOutputFilenameInput.value);
+    const filename = `${typed || `translated_${Date.now()}`}.mmsub.srt`;
+    const blob = new Blob([mmSubSrt], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    const original = downloadMmSubBtn.innerHTML;
+    downloadMmSubBtn.innerHTML = '<i class="fa-solid fa-check mr-1"></i> Downloaded';
+    setTimeout(() => { downloadMmSubBtn.innerHTML = original; }, 1800);
 });
 
 sendToTtsBtn.addEventListener('click', () => {
