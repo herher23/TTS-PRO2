@@ -1258,9 +1258,10 @@ function buildTranslationPrompt(lines, targetLang) {
 
 Rules:
 - Translate EACH numbered line into natural, concise, on-screen subtitle style ${targetLang}.
-- Return exactly the same number of items, in the same order. Do not merge, split, skip, or renumber lines.
+- Return exactly the same number of items, in the same order. Do not merge, split, skip, or renumber lines — each JSON string corresponds to exactly one existing subtitle cue, with its own unchanged number and timestamp; never create a new cue.
 - Keep meaning and tone faithful to the source; keep proper nouns / names consistent across lines.
 - Do not add explanations, notes, or the original text — only the translation.
+- Line length: only break a translated line in two when it is genuinely too long to read comfortably at a glance (roughly beyond ~42 characters, adjusted naturally for the target script's visual width) — a short or already-readable line must stay on a single line, do not wrap it unnecessarily. When a break is needed, insert a single literal "\\n" at a natural phrase boundary inside that same JSON string — never more than 2 lines total, and never as a separate array item. This only reflows text within the cue's existing timestamp block; it must never change the timing or the cue number.
 - Output ONLY a JSON array of strings (one translated string per input line) — plain subtitle text with no numbering, no timestamps, and no markdown, ready to be dropped straight into a professional .srt file.${myanmarRules}
 ${contextBlock}
 Subtitle lines to translate:
