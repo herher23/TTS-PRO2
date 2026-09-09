@@ -2046,6 +2046,7 @@ const transcribeMaxRetriesInput = document.getElementById('transcribeMaxRetries'
 const transcribeTimeoutSecInput = document.getElementById('transcribeTimeoutSec');
 const transcribeChunkSizeInput = document.getElementById('transcribeChunkSize');
 const transcribeWorkerCountInput = document.getElementById('transcribeWorkerCount');
+const transcribeWaveformSyncToggle = document.getElementById('transcribeWaveformSyncToggle');
 const clearTranscribeBtn = document.getElementById('clearTranscribeBtn');
 const transcribeBtn = document.getElementById('transcribeBtn');
 const geminiTranscribeBtn = document.getElementById('geminiTranscribeBtn');
@@ -2540,7 +2541,7 @@ function offsetProviderChunkResult(result, offsetSec, onLog) {
 // Same Web Audio decode/slice/resample pipeline and same worker-pool pattern as
 // geminiTranscribeWithWorkers below — the only difference is each chunk is sent through
 // transcribeChunkWithRotation (Gladia/Groq/AssemblyAI pool) instead of straight to Gemini.
-async function transcribeMediaWithWorkers(audioBuffer, chunkSizeSec, workerCount, language, maxRetries, timeoutSec, onLog) {
+async function transcribeMediaWithWorkers(audioBuffer, chunkSizeSec, workerCount, language, maxRetries, timeoutSec, onLog, useWaveformSync = true) {
     const timeChunks = buildTimeChunks(audioBuffer.duration, chunkSizeSec);
     const results = new Array(timeChunks.length);
     const providerCounts = {};
@@ -2602,7 +2603,15 @@ async function transcribeMediaWithWorkers(audioBuffer, chunkSizeSec, workerCount
 
     const mergedSubs = [];
     results.forEach(r => { if (r) mergedSubs.push(...r); });
-    return { srt: mergedSubs.length ? rebuildSrt(mergedSubs) : '', providerCounts };
+
+    let finalSubs = mergedSubs;
+    if (useWaveformSync && mergedSubs.length > 0) {
+        onLog('Waveform sync: audio envelope ကို တွက်ချက်နေသည်...');
+        const envelope = computeSpeechEnvelope(audioBuffer, onLog);
+        finalSubs = refineCueTimingsWithEnvelope(mergedSubs, envelope, onLog);
+    }
+
+    return { srt: finalSubs.length ? rebuildSrt(finalSubs) : '', providerCounts };
 }
 
 // =============================================================
@@ -2628,6 +2637,7 @@ async function handleTranscribeMedia() {
     const timeoutSec = Math.max(parseInt(transcribeTimeoutSecInput.value, 10) || 120, 10);
     const chunkSizeSec = Math.max(parseInt(transcribeChunkSizeInput.value, 10) || 60, 15);
     const workerCount = Math.max(parseInt(transcribeWorkerCountInput.value, 10) || 3, 1);
+    const useWaveformSync = transcribeWaveformSyncToggle ? transcribeWaveformSyncToggle.checked : true;
 
     transcribeBtn.disabled = true;
     transcribeBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin mr-2"></i><span>TRANSCRIBING...</span>';
@@ -2648,7 +2658,7 @@ async function handleTranscribeMedia() {
         const audioBuffer = await decodeMediaToAudioBuffer(selectedMediaFile);
         logTranscribe(`Decode ပြီးပါပြီ — Duration: ${formatTime(audioBuffer.duration)}`, 'ok');
 
-        const { srt, providerCounts } = await transcribeMediaWithWorkers(audioBuffer, chunkSizeSec, workerCount, language, maxRetries, timeoutSec, (msg, lvl) => logTranscribe(msg, lvl));
+        const { srt, providerCounts } = await transcribeMediaWithWorkers(audioBuffer, chunkSizeSec, workerCount, language, maxRetries, timeoutSec, (msg, lvl) => logTranscribe(msg, lvl), useWaveformSync);
 
         if (transcribeAborted) {
             logTranscribe('User မှ ရပ်တန့်လိုက်ပါသည်။', 'warn');
@@ -2659,7 +2669,7 @@ async function handleTranscribeMedia() {
         currentTranscribeResult = {
             srt: srt || '(No timestamped segments returned — see TXT tab)',
             fullText: subsForText.map(s => s.textLines.join(' ')).join('\n'),
-            jsonStr: JSON.stringify({ note: 'Generated via TRANSCRIBE — chunked across Gladia/Groq/AssemblyAI pool', chunkSizeSec, workerCount, providerCounts, cues: subsForText.length }, null, 2),
+            jsonStr: JSON.stringify({ note: 'Generated via TRANSCRIBE — chunked across Gladia/Groq/AssemblyAI pool', chunkSizeSec, workerCount, waveformSync: useWaveformSync, providerCounts, cues: subsForText.length }, null, 2),
             provider: providerSummary,
             sourceFileName: selectedMediaFile.name
         };
@@ -3090,6 +3100,215 @@ function blobToBase64(blob) {
     });
 }
 
+// =============================================================
+// Waveform-based cue timing refinement (Voice Activity Detection)
+// =============================================================
+// Provider/Gemini timestamps are decent but not frame-accurate — a cue can start a beat
+// late, end a beat early, or (right at a chunk boundary) drift a few hundred ms. Instead
+// of trusting those numbers blindly, we run a lightweight energy-based VAD pass over the
+// SAME decoded audioBuffer already sitting in memory (no extra download, no extra API
+// call) and snap each cue's start/end to the nearest real speech onset/offset.
+//
+// Scope note: this corrects cues against the ACTUAL AUDIO (voice onset/offset), which is
+// what a viewer's ear checks subtitles against for both audio-only files and video files.
+// True per-frame lip-movement analysis on the video track would need real-time face/mouth
+// detection — a much heavier computer-vision problem that doesn't fit a client-only static
+// page. Audio-onset alignment gets the same practical result (captions matching the voice)
+// without it.
+
+// Grapheme-aware character count for reading-speed estimates. Plain `.length` badly
+// overcounts Burmese text (each visible glyph can be 2-4 UTF-16 code units — base
+// consonant + medial + vowel sign + tone marks), which would make Burmese cues look
+// "readable" far faster than a human actually reads them. Intl.Segmenter counts visible
+// glyph clusters instead; falls back to code-point count on engines without it.
+let _graphemeSegmenter = null;
+function countReadableChars(text) {
+    const clean = (text || '').replace(/\s+/g, ' ').trim();
+    if (!clean) return 0;
+    try {
+        if (!_graphemeSegmenter && typeof Intl !== 'undefined' && Intl.Segmenter) {
+            _graphemeSegmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
+        }
+        if (_graphemeSegmenter) return Array.from(_graphemeSegmenter.segment(clean)).length;
+    } catch (e) { /* fall through */ }
+    return Array.from(clean).length;
+}
+
+// Downmixes the full decoded buffer to mono and computes a per-frame RMS energy
+// envelope, then applies hysteresis thresholding — a HIGHER bar to start counting as
+// speech than to keep counting as speech, plus a short "hangover" after level drops — so
+// a single loud consonant isn't mistaken for a whole word, and a brief natural pause
+// mid-sentence isn't mistaken for the end of the line. Runs once per file (not per
+// chunk): a single pass over the raw samples, same cost class as the resampling work the
+// app already does per chunk.
+function computeSpeechEnvelope(audioBuffer, onLog) {
+    const numChannels = audioBuffer.numberOfChannels;
+    const totalFrames = audioBuffer.length;
+    const hopSec = 0.02; // 20ms per analysis frame — fine enough to catch word boundaries
+    const hopSamples = Math.max(1, Math.round(hopSec * audioBuffer.sampleRate));
+    const frameCount = Math.max(1, Math.ceil(totalFrames / hopSamples));
+
+    const channels = [];
+    for (let ch = 0; ch < numChannels; ch++) channels.push(audioBuffer.getChannelData(ch));
+
+    const rms = new Float32Array(frameCount);
+    for (let f = 0; f < frameCount; f++) {
+        const s0 = f * hopSamples;
+        const s1 = Math.min(totalFrames, s0 + hopSamples);
+        let sumSq = 0, n = 0;
+        for (let i = s0; i < s1; i++) {
+            let mixed = 0;
+            for (let ch = 0; ch < numChannels; ch++) mixed += channels[ch][i];
+            mixed /= numChannels;
+            sumSq += mixed * mixed;
+            n++;
+        }
+        rms[f] = n > 0 ? Math.sqrt(sumSq / n) : 0;
+    }
+
+    // Noise floor ≈ a low percentile of the energy distribution (robust to a few loud
+    // frames skewing a plain average). Speech threshold sits a fixed margin above it,
+    // with an absolute floor so a near-silent recording doesn't classify hiss as speech.
+    const sorted = Float32Array.from(rms).sort();
+    const noiseFloor = sorted[Math.floor(sorted.length * 0.1)] || 0;
+    const onThreshold = Math.max(noiseFloor * 3.0, 0.006);
+    const offThreshold = Math.max(noiseFloor * 1.8, 0.004);
+
+    const onHangFrames = Math.round(0.03 / hopSec);   // ~30ms above threshold to count as onset
+    const offHangFrames = Math.round(0.30 / hopSec);  // ~300ms below threshold to count as offset
+
+    const speech = new Uint8Array(frameCount);
+    let state = 0, onRun = 0, offRun = 0;
+    for (let f = 0; f < frameCount; f++) {
+        if (state === 0) {
+            onRun = rms[f] >= onThreshold ? onRun + 1 : 0;
+            if (onRun >= onHangFrames) { state = 1; offRun = 0; }
+        } else {
+            offRun = rms[f] < offThreshold ? offRun + 1 : 0;
+            if (offRun >= offHangFrames) { state = 0; onRun = 0; }
+        }
+        speech[f] = state;
+    }
+
+    if (onLog) onLog(`Waveform sync: energy envelope — ${frameCount} frame (${Math.round(hopSec * 1000)}ms စီ) တွက်ချက်ပြီးပါပြီ။`, 'ok');
+
+    const isSpeechAtFrame = (f) => (f >= 0 && f < frameCount) ? !!speech[f] : false;
+    const frameAtTime = (t) => Math.min(frameCount - 1, Math.max(0, Math.round(t / hopSec)));
+
+    return {
+        hopSec, frameCount, duration: audioBuffer.duration, isSpeechAtFrame, frameAtTime,
+        // Nearest transition INTO speech (silence→speech) within ±windowSec of tSec.
+        // Searches outward from tSec frame-by-frame so the CLOSEST transition wins.
+        nearestOnset(tSec, windowSec) {
+            const centerF = frameAtTime(tSec);
+            const spanF = Math.round(windowSec / hopSec);
+            for (let d = 0; d <= spanF; d++) {
+                const candidates = d === 0 ? [centerF] : [centerF - d, centerF + d];
+                for (const f of candidates) {
+                    if (f <= 0 || f >= frameCount) continue;
+                    if (!isSpeechAtFrame(f - 1) && isSpeechAtFrame(f)) return f * hopSec;
+                }
+            }
+            return null;
+        },
+        // Nearest transition OUT OF speech (speech→silence) within ±windowSec of tSec.
+        nearestOffset(tSec, windowSec) {
+            const centerF = frameAtTime(tSec);
+            const spanF = Math.round(windowSec / hopSec);
+            for (let d = 0; d <= spanF; d++) {
+                const candidates = d === 0 ? [centerF] : [centerF - d, centerF + d];
+                for (const f of candidates) {
+                    if (f <= 0 || f >= frameCount) continue;
+                    if (isSpeechAtFrame(f - 1) && !isSpeechAtFrame(f)) return f * hopSec;
+                }
+            }
+            return null;
+        }
+    };
+}
+
+// Snaps each cue's start/end onto the real speech onset/offset from the envelope above,
+// then enforces a minimum on-screen duration based on how much text there is to read (so
+// a short provider-reported duration doesn't flash a long line off-screen before it can
+// be read), all while keeping cues in chronological order and never overlapping a
+// neighbour. `subs` is the shared {timeLine, textLines} shape used everywhere else in
+// this file, so the result can go straight into rebuildSrt() unchanged. Cues whose
+// timestamp can't be parsed are left untouched (TIMESTAMP CHECK / AI TIMESTAMP FIX are
+// the safety net for those, same as the rest of the app) rather than dropped.
+function refineCueTimingsWithEnvelope(subs, envelope, onLog) {
+    const SNAP_WINDOW_SEC = 0.6;   // how far to look for a real onset/offset nearby
+    const MIN_GAP_SEC = 0.08;      // minimum gap kept between two consecutive cues
+    const CHARS_PER_SEC = 14;      // conservative reading speed (mixed EN/MY subtitle norms)
+    const MIN_DUR_SEC = 1.0;
+    const MAX_EXTEND_SEC = 6.0;    // cap on how far we'll stretch reading time out
+
+    const parsed = subs.map(s => {
+        const parts = s.timeLine.split('-->').map(p => p.trim());
+        const startMs = parts.length === 2 ? parseSrtTimestampToMs(parts[0]) : null;
+        const endMs = parts.length === 2 ? parseSrtTimestampToMs(parts[1]) : null;
+        return { sub: s, start: startMs === null ? null : startMs / 1000, end: endMs === null ? null : endMs / 1000 };
+    });
+
+    // Process in chronological order (not necessarily array order) so prev/next-cue gap
+    // logic lines up with the actual timeline rather than the merge order of chunks.
+    const order = parsed
+        .map((_, i) => i)
+        .filter(i => parsed[i].start !== null && parsed[i].end !== null)
+        .sort((a, b) => parsed[a].start - parsed[b].start);
+
+    let adjustedCount = 0;
+
+    for (let k = 0; k < order.length; k++) {
+        const idx = order[k];
+        const cur = parsed[idx];
+        const origStart = cur.start, origEnd = cur.end;
+        const prevEnd = k > 0 ? parsed[order[k - 1]].end : null;
+        const nextStart = k < order.length - 1 ? parsed[order[k + 1]].start : null;
+
+        // 1) Snap start to the nearest real speech onset near the provider's start time.
+        const onset = envelope.nearestOnset(cur.start, SNAP_WINDOW_SEC);
+        let newStart = onset !== null ? onset : cur.start;
+
+        // 2) Snap end to the nearest real speech offset near the provider's end time.
+        const offset = envelope.nearestOffset(cur.end, SNAP_WINDOW_SEC);
+        let newEnd = offset !== null ? offset : cur.end;
+
+        // Never let a snap invert or collapse the cue — fall back to the provider's own
+        // numbers for this cue if that happens.
+        if (newEnd <= newStart) { newStart = origStart; newEnd = origEnd; }
+
+        // 3) Keep a minimum gap from the previous (already-refined) cue.
+        if (prevEnd !== null && newStart < prevEnd + MIN_GAP_SEC) {
+            newStart = Math.max(newStart, Math.min(prevEnd + MIN_GAP_SEC, newEnd - 0.1));
+        }
+
+        // 4) Enforce a natural reading pace — extend (never shorten below what the voice
+        // actually took) so the line doesn't disappear before it can be read, capped so
+        // it never runs into the next cue's start.
+        const rawText = (cur.sub.translatedText !== undefined && cur.sub.translatedText !== null)
+            ? cur.sub.translatedText
+            : cur.sub.textLines.join(' ');
+        const idealDur = Math.min(MAX_EXTEND_SEC, Math.max(MIN_DUR_SEC, countReadableChars(rawText) / CHARS_PER_SEC));
+        if (newEnd - newStart < idealDur) {
+            const hardCap = nextStart !== null ? nextStart - MIN_GAP_SEC : Infinity;
+            newEnd = Math.min(newStart + idealDur, Math.max(hardCap, newStart + 0.3));
+        }
+        if (nextStart !== null && newEnd > nextStart - MIN_GAP_SEC) {
+            newEnd = Math.max(newStart + 0.3, nextStart - MIN_GAP_SEC);
+        }
+
+        if (Math.abs(newStart - origStart) > 0.02 || Math.abs(newEnd - origEnd) > 0.02) adjustedCount++;
+
+        cur.start = newStart;
+        cur.end = newEnd;
+        cur.sub.timeLine = `${formatSrtTimestamp(newStart)} --> ${formatSrtTimestamp(newEnd)}`;
+    }
+
+    if (onLog) onLog(`Waveform sync: cue ${adjustedCount}/${subs.length} ခု ရဲ့ timestamp ကို actual speech + ဖတ်ရှုနှုန်းအလိုက် ချိန်ညှိပြီးပါပြီ။`, 'ok');
+
+    return subs;
+}
+
 function buildTimeChunks(totalDurationSec, chunkSizeSec) {
     const chunks = [];
     let start = 0;
@@ -3172,7 +3391,7 @@ function setTranscribeWorkerStatus(workerId, status, chunkNum, totalChunks) {
 }
 
 // ---- Worker-pool driven multi-chunk direct transcription (mirrors translateSrtWithWorkers) ----
-async function geminiTranscribeWithWorkers(audioBuffer, chunkSizeSec, workerCount, languageHint, maxRetries, timeoutSec, onLog) {
+async function geminiTranscribeWithWorkers(audioBuffer, chunkSizeSec, workerCount, languageHint, maxRetries, timeoutSec, onLog, useWaveformSync = true) {
     const timeChunks = buildTimeChunks(audioBuffer.duration, chunkSizeSec);
     const results = new Array(timeChunks.length);
 
@@ -3232,7 +3451,15 @@ async function geminiTranscribeWithWorkers(audioBuffer, chunkSizeSec, workerCoun
 
     const mergedSubs = [];
     results.forEach(r => { if (r) mergedSubs.push(...r); });
-    return mergedSubs.length ? rebuildSrt(mergedSubs) : '';
+
+    let finalSubs = mergedSubs;
+    if (useWaveformSync && mergedSubs.length > 0) {
+        onLog('Waveform sync: audio envelope ကို တွက်ချက်နေသည်...');
+        const envelope = computeSpeechEnvelope(audioBuffer, onLog);
+        finalSubs = refineCueTimingsWithEnvelope(mergedSubs, envelope, onLog);
+    }
+
+    return finalSubs.length ? rebuildSrt(finalSubs) : '';
 }
 
 async function handleGeminiTranscribe() {
@@ -3254,6 +3481,7 @@ async function handleGeminiTranscribe() {
     const timeoutSec = Math.max(parseInt(transcribeTimeoutSecInput.value, 10) || 120, 30);
     const langVal = transcribeLangSelect.value;
     const languageHint = GEMINI_TRANSCRIBE_LANGUAGE_NAMES[langVal] || null;
+    const useWaveformSync = transcribeWaveformSyncToggle ? transcribeWaveformSyncToggle.checked : true;
 
     transcribeBtn.disabled = true;
     geminiTranscribeBtn.disabled = true;
@@ -3274,7 +3502,7 @@ async function handleGeminiTranscribe() {
         const audioBuffer = await decodeMediaToAudioBuffer(selectedMediaFile);
         logTranscribe(`Decode ပြီးပါပြီ — Duration: ${formatTime(audioBuffer.duration)}`, 'ok');
 
-        const srt = await geminiTranscribeWithWorkers(audioBuffer, chunkSizeSec, workerCount, languageHint, maxRetries, timeoutSec, (msg, lvl) => logTranscribe(msg, lvl));
+        const srt = await geminiTranscribeWithWorkers(audioBuffer, chunkSizeSec, workerCount, languageHint, maxRetries, timeoutSec, (msg, lvl) => logTranscribe(msg, lvl), useWaveformSync);
 
         if (transcribeAborted) {
             logTranscribe('User မှ ရပ်တန့်လိုက်ပါသည်။', 'warn');
@@ -3284,7 +3512,7 @@ async function handleGeminiTranscribe() {
         currentTranscribeResult = {
             srt: srt || '(No speech detected in this media — empty SRT)',
             fullText: subsForText.map(s => s.textLines.join(' ')).join('\n'),
-            jsonStr: JSON.stringify({ note: 'Generated via AI TRANSCRIBE (GEMINI) — chunked, no Gladia/Groq/AssemblyAI', chunkSizeSec, workerCount, cues: subsForText.length }, null, 2),
+            jsonStr: JSON.stringify({ note: 'Generated via AI TRANSCRIBE (GEMINI) — chunked, no Gladia/Groq/AssemblyAI', chunkSizeSec, workerCount, waveformSync: useWaveformSync, cues: subsForText.length }, null, 2),
             provider: 'gemini',
             sourceFileName: selectedMediaFile.name
         };

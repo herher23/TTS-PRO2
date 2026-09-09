@@ -36,6 +36,17 @@ runs the whole pipeline in one click.
    - **AI SRT Format** — asks Gemini to merge over-split, word-level fragments into
      natural subtitle lines, remove duplicate/overlapping timestamps, and renumber cues.
      Also chunked for long transcripts.
+   - **Waveform Sync** (checkbox in the Controls Panel, on by default, applies to both
+     TRANSCRIBE and AI TRANSCRIBE (GEMINI)) — after all chunks are merged, the app runs a
+     lightweight energy-based voice-activity-detection pass over the same decoded audio
+     already in memory (no extra network call) and snaps each cue's start/end onto the
+     nearest real speech onset/offset, then extends any cue that's shorter than a natural
+     reading pace would need (based on its own text length) — capped so it never runs
+     into the next cue. This corrects provider timestamp drift without needing another
+     API round-trip. It aligns to the *audio* (voice onset/offset), not to visual lip
+     movement in the video track — true frame-by-frame lip-sync would need computer-vision
+     face/mouth detection, which is out of scope for a client-only static page; matching
+     the voice is what actually keeps subtitles in sync for viewers either way.
 2. **SRT Translator** — paste/open an original `.srt`, pick a target language, and it
    translates every subtitle line via the Gemini API while preserving both the timestamps
    **and the original cue numbers** verbatim — cue `651` in the source stays cue `651` in
