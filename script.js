@@ -116,6 +116,8 @@ const LS_MODELS = 'neoyangon_tts_models';
 const LS_MODEL_IDX = 'neoyangon_model_idx';
 const LS_GLOSSARY = 'neoyangon_glossary';
 const LS_GLOSSARY_ENABLED = 'neoyangon_glossary_enabled';
+const LS_GLOSSARY_WHOLE = 'neoyangon_glossary_wholeword';
+const LS_GLOSSARY_CASE = 'neoyangon_glossary_case';
 const LS_CONTEXT_MEMORY = 'neoyangon_context_memory';
 const LS_CONTEXT_MEMORY_ENABLED = 'neoyangon_context_memory_enabled';
 const LS_THEME = 'neoyangon_theme';
@@ -457,14 +459,26 @@ if (transGlossaryEnabledChk) {
 // Applies every glossary entry as a global (whole-conversation) find/replace pass
 function applyGlossary(text) {
     if (!isGlossaryEnabled()) return text;
+    const wholeWord = safeLsGet(LS_GLOSSARY_WHOLE) !== 'false';      // default ON
+    const caseSensitive = safeLsGet(LS_GLOSSARY_CASE) !== 'false';   // default ON (same as before)
+    const flags = caseSensitive ? 'g' : 'gi';
+    const isWordCh = ch => /[A-Za-z0-9_]/.test(ch);
     // Longest term first, so a short name ("John") can never break a longer one ("Johnny")
     const list = getGlossary().slice().sort((a, b) => (b.term || '').length - (a.term || '').length);
     let output = text;
     list.forEach(({ term, replacement }) => {
         if (!term) return;
         const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-        const re = new RegExp(escaped, 'g');
-        output = output.replace(re, () => replacement);
+        // Whole-word only matters for Latin letters / digits at the edge of the term
+        // (Myanmar text has no spaces between words, so Myanmar terms always match plainly).
+        const needLeft = wholeWord && isWordCh(term[0]);
+        const needRight = wholeWord && isWordCh(term[term.length - 1]);
+        if (!needLeft && !needRight) {
+            output = output.replace(new RegExp(escaped, flags), () => replacement);
+            return;
+        }
+        const re = new RegExp(`${needLeft ? '(^|[^A-Za-z0-9_])' : '()'}${escaped}${needRight ? '(?![A-Za-z0-9_])' : ''}`, flags);
+        output = output.replace(re, (m, pre) => pre + replacement);
     });
     return output;
 }
@@ -1388,6 +1402,7 @@ const customPromptEnabledChk = document.getElementById('customPromptEnabledChk')
 const autoExtractBtn = document.getElementById('autoExtractBtn');
 const proofreadPassChk = document.getElementById('proofreadPassChk');
 const customPromptStatus = document.getElementById('customPromptStatus');
+const autoExtractStopBtn = document.getElementById('autoExtractStopBtn');
 
 function getCustomPrompt() { return safeLsGet(LS_CUSTOM_PROMPT) || ''; }
 function isCustomPromptEnabled() { return safeLsGet(LS_CUSTOM_PROMPT_ENABLED) !== 'false'; }
@@ -1460,6 +1475,7 @@ async function autoExtractCharacters() {
     const subs = parseSrt(srtInput.value);
     if (!subs.length) { setCustomPromptStatus('SRT မရှိသေးပါ — မူရင်း SRT အရင်ထည့်ပါ'); return; }
     autoExtractBtn.disabled = true;
+    if (autoExtractStopBtn) autoExtractStopBtn.disabled = false;
     translationAborted = false;
     try {
         // Split the WHOLE SRT (not a 12k sample) into ~7000-char pieces so every cue is read.
@@ -1513,7 +1529,7 @@ ${pieces[i]}`;
         }
 
         const chars = Array.from(found.values());
-        if (!chars.length) { setCustomPromptStatus(failedPieces ? `FAILED: ${failedPieces} piece မအောင်မြင်ပါ` : 'ဇာတ်ကောင် မတွေ့ပါ', 8000); return; }
+        if (!chars.length) { setCustomPromptStatus(translationAborted ? 'ရပ်လိုက်ပါပြီ' : (failedPieces ? `FAILED: ${failedPieces} piece မအောင်မြင်ပါ` : 'ဇာတ်ကောင် မတွေ့ပါ'), 8000); return; }
 
         const gloss = getGlossary();
         let added = 0;
@@ -1533,11 +1549,12 @@ ${pieces[i]}`;
             : (text.trim() ? text.replace(/\s+$/, '') + '\n\n' : '') + block;
         customPromptBox.value = text;
         saveCustomPromptFromBox();
-        setCustomPromptStatus(`ပြီးပါပြီ ✓ ဇာတ်ကောင် ${chars.length} ယောက် / Glossary အသစ် ${added} ခု${failedPieces ? ` / မအောင်မြင် ${failedPieces} piece` : ''}`, 8000);
+        setCustomPromptStatus(`${translationAborted ? 'ရပ်လိုက်ပါပြီ (ရလာသလောက် သိမ်းထားသည်)' : 'ပြီးပါပြီ ✓'} ဇာတ်ကောင် ${chars.length} ယောက် / Glossary အသစ် ${added} ခု${failedPieces ? ` / မအောင်မြင် ${failedPieces} piece` : ''}`, 8000);
     } catch (e) {
         setCustomPromptStatus(`FAILED: ${e.message}`, 8000);
     } finally {
         autoExtractBtn.disabled = false;
+        if (autoExtractStopBtn) autoExtractStopBtn.disabled = true;
     }
 }
 function saveCustomPromptFromBox() { safeLsSet(LS_CUSTOM_PROMPT, customPromptBox.value); }
@@ -1583,6 +1600,28 @@ ${JSON.stringify(items)}`;
     logTrans(`Proofreading ပြီးပါပြီ — cue ${changed} ခု ပြင်ခဲ့သည်`, 'ok');
 }
 
+// When the managed [AUTO CHARACTER NOTES] block is long (more than 12 characters), only send the
+// characters whose name actually appears in this chunk — saves tokens on every request.
+// Short lists are sent whole, so a character referred to only by pronoun keeps its gender note.
+function filterAutoNotesForChunk(promptText, chunkLower) {
+    const a = promptText.indexOf(AUTO_NOTES_START), b = promptText.indexOf(AUTO_NOTES_END);
+    if (a === -1 || b <= a) return promptText;
+    const innerStart = a + AUTO_NOTES_START.length;
+    const rows = promptText.slice(innerStart, b).split('\n');
+    const isCharRow = r => /^\s*- .+? \(/.test(r);
+    if (rows.filter(isCharRow).length <= 12) return promptText;
+    const keep = rows.filter(r => {
+        if (!isCharRow(r)) return true;
+        const name = r.match(/^\s*- (.+?) \(/)[1].trim().toLowerCase();
+        return chunkLower.includes(name);
+    });
+    if (!keep.some(isCharRow)) {
+        // no listed character appears in this chunk — drop the whole block
+        return (promptText.slice(0, a) + promptText.slice(b + AUTO_NOTES_END.length)).trim();
+    }
+    return promptText.slice(0, innerStart) + keep.join('\n') + promptText.slice(b);
+}
+
 function buildTranslationPrompt(lines, targetLang) {
     const numbered = lines.map((l, i) => `${i + 1}. ${l.replace(/\n/g, ' / ')}`).join('\n');
     const isMyanmar = targetLang === 'Myanmar (Burmese)';
@@ -1591,7 +1630,8 @@ function buildTranslationPrompt(lines, targetLang) {
     const contextBlock = contextMemory
         ? `\nAdditional context / instructions from the user (follow these while translating):\n${contextMemory}\n`
         : '';
-    const customPrompt = (isCustomPromptEnabled() ? getCustomPrompt() : '').trim();
+    const chunkLower = lines.join('\n').toLowerCase();
+    const customPrompt = filterAutoNotesForChunk((isCustomPromptEnabled() ? getCustomPrompt() : '').trim(), chunkLower);
     const customBlock = customPrompt
         ? `\nCustom prompt from the user (highest priority — follow strictly):\n${customPrompt}\n`
         : '';
@@ -1602,7 +1642,7 @@ function buildTranslationPrompt(lines, targetLang) {
 - Also NEVER use the Western exclamation mark "!" or question mark "?" anywhere in the output.
 - Write clean subtitle-style Burmese sentences without any of the punctuation marks listed above.` : '';
 
-    const glossEntries = isGlossaryEnabled() ? getGlossary().filter(g => g.term && g.replacement) : [];
+    const glossEntries = isGlossaryEnabled() ? getGlossary().filter(g => g.term && g.replacement && chunkLower.includes(g.term.toLowerCase())) : [];
     const glossBlock = glossEntries.length
         ? `\nGlossary (for these source names / terms, ALWAYS use exactly the given form in the translation):\n${glossEntries.map(g => `${g.term} => ${g.replacement}`).join('\n')}\n`
         : '';
@@ -1730,15 +1770,23 @@ async function translateSrtWithWorkers(subs, chunkSize, targetLang, workerCount,
     const failedIdx = new Set(); // chunk indices currently sitting on untranslated fallback text
 
     renderWorkerGrid(workerCount);
-    updateTransProgress(0, chunks.length);
+    // Resume support: chunks whose every cue already has a saved translation are not sent again.
+    const pendingIdx = [];
+    chunks.forEach((c, i) => {
+        if (c.every(s => s._pre !== undefined)) results[i] = c.map(s => s._pre);
+        else pendingIdx.push(i);
+    });
+    const alreadyDone = chunks.length - pendingIdx.length;
+    if (alreadyDone > 0) logTrans(`သိမ်းထားပြီးသား chunk ${alreadyDone}/${chunks.length} ကို ကျော်ပြီး ကျန်တာကိုသာ ဘာသာပြန်မည်`, 'ok');
+    updateTransProgress(alreadyDone, chunks.length);
 
     // Runs a worker pool over a specific list of chunk indices. Used for the initial
     // full sweep, and again afterwards for recovery rounds over chunks that came back
     // untranslated (so a timestamp isn't left in the source language just because it
     // hit a timeout once).
-    async function runPass(indices, trackProgress) {
+    async function runPass(indices, trackProgress, baseDone = 0) {
         let cursor = 0;
-        let doneInPass = 0;
+        let doneInPass = baseDone;
 
         async function workerLoop(workerId) {
             while (true) {
@@ -1755,6 +1803,11 @@ async function translateSrtWithWorkers(subs, chunkSize, targetLang, workerCount,
                     setWorkerStatus(workerId, 'done', myChunkIdx + 1, chunks.length);
                     logTrans(`Chunk ${myChunkIdx + 1}/${chunks.length} ပြီးပါပြီ ✓`, 'ok');
                     failedIdx.delete(myChunkIdx);
+                    if (transSession) { // autosave this chunk so a refresh / crash loses nothing
+                        chunks[myChunkIdx].forEach((s, si) => { if (s._idx !== undefined) transSession.done[s._idx] = results[myChunkIdx][si]; });
+                        transSession.updatedAt = Date.now();
+                        persistTransSession();
+                    }
                 } catch (e) {
                     if (results[myChunkIdx] === undefined) {
                         results[myChunkIdx] = chunks[myChunkIdx].map(s => s.textLines.join('\n')); // fallback: keep original text until a later pass can recover it
@@ -1775,7 +1828,7 @@ async function translateSrtWithWorkers(subs, chunkSize, targetLang, workerCount,
         await Promise.all(pool);
     }
 
-    await runPass(chunks.map((_, i) => i), true);
+    await runPass(pendingIdx, true, alreadyDone);
 
     // Recovery sweeps: a chunk that exhausted translateChunkWithRetry's own internal
     // retries is still sitting on its original untranslated text at this point. Check
@@ -1803,6 +1856,7 @@ async function translateSrtWithWorkers(subs, chunkSize, targetLang, workerCount,
         const chunkStillFailed = failedIdx.has(ci);
         chunk.forEach((sub, si) => {
             sub.translatedText = (results[ci] && results[ci][si] !== undefined) ? results[ci][si] : sub.textLines.join('\n');
+            delete sub._pre; // resume marker no longer needed once results are applied
             sub.translationFailed = chunkStillFailed; // used by the output panel's "untranslated check" button
         });
     });
@@ -1881,6 +1935,7 @@ clearSrtBtn.addEventListener('click', () => {
     outputDoneBadge.classList.add('hidden');
     lastTranslatedSubs = null;
     lastSrtSourceFileName = null;
+    clearTransSession();
     srtOutputFilenameInput.value = '';
     srtCheckResultsBox.classList.add('hidden');
     srtCheckResultsBox.innerHTML = '';
@@ -2126,6 +2181,23 @@ async function handleTranslateSrt() {
         logTrans('ERROR: SRT format မှန်ကန်စွာ parse လုပ်၍မရပါ', 'err');
         return;
     }
+
+    // ---- autosave / resume ----
+    const sig = hashStr(rawSrt);
+    subs.forEach((s, i) => { s._idx = i; });
+    let resumed = 0;
+    const prevSession = loadTransSession();
+    if (resumeSessionChk && resumeSessionChk.checked && prevSession && prevSession.sig === sig
+        && prevSession.targetLang === targetLangSelect.value && prevSession.done) {
+        subs.forEach((s, i) => { if (prevSession.done[i] !== undefined) { s._pre = prevSession.done[i]; resumed++; } });
+    }
+    if (resumed > 0) {
+        transSession = prevSession;
+    } else {
+        transSession = { v: 1, sig, targetLang: targetLangSelect.value, total: subs.length, fileName: lastSrtSourceFileName || '', done: {}, updatedAt: Date.now() };
+        safeLsSet(LS_TRANS_SESSION_SRT, rawSrt);
+    }
+    persistTransSession();
     if (subs.droppedCount > 0) {
         logTrans(`သတိပေးချက်: format မမှန်ကန်သော cue ${subs.droppedCount} ခုကို parse လုပ်စဉ် ကျော်ခဲ့ပါသည် — output SRT တွင် ဒီ cue များ ပါဝင်မည် မဟုတ်ပါ`, 'warn');
     }
@@ -2159,6 +2231,7 @@ async function handleTranslateSrt() {
     srtCheckResultsBox.innerHTML = '';
 
     logTrans(`SRT ${subs.length} subtitles / ${Math.ceil(subs.length / chunkSize)} chunks / ${workerCount} workers ဖြင့် ဘာသာပြန်စတင်ပါပြီ → ${targetLang}`);
+    if (resumed > 0) logTrans(`ယခင် သိမ်းထားသော cue ${resumed}/${subs.length} ကို ပြန်သုံးပါမည် (RESUME)`, 'ok');
 
     try {
         const translatedSubs = await translateSrtWithWorkers(subs, chunkSize, targetLang, workerCount, maxRetries, timeoutSec);
@@ -2181,6 +2254,7 @@ async function handleTranslateSrt() {
             srtOutput.value = proofed;
             srtOutputMeta.textContent = `Subtitles: ${translatedSubs.length} | Characters: ${proofed.length}`;
         }
+        if (!translationAborted && !translatedSubs.some(s => s.translationFailed)) clearTransSession(); // fully done — nothing left to resume
         if (translationAborted) {
             logTrans('တစ်စိတ်တစ်ပိုင်းသာ ပြီးပါသည် (ရပ်တန့်ထားသည်) — မပြန်ရသေးသော cue များကို RETRY နှိပ်ပါ။', 'warn');
         } else {
@@ -2210,6 +2284,218 @@ function handleStopTranslate() {
 // =============================================================
 // Copy / Download / Send-to-TTS
 // =============================================================
+// =============================================================
+// AUTOSAVE / RESUME + GLOSSARY BULK ADD + BACKUP / IMPORT + AUTO-EXTRACT STOP
+// =============================================================
+const LS_TRANS_SESSION = 'neoyangon_trans_session';
+const LS_TRANS_SESSION_SRT = 'neoyangon_trans_session_srt';
+const resumeSessionChk = document.getElementById('resumeSessionChk');
+let transSession = null; // { v, sig, targetLang, total, fileName, done: {cueIndex: translatedText}, updatedAt }
+
+function hashStr(s) {
+    let h = 5381;
+    for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) | 0;
+    return (h >>> 0).toString(36) + ':' + s.length;
+}
+function loadTransSession() {
+    try {
+        const m = JSON.parse(safeLsGet(LS_TRANS_SESSION) || 'null');
+        return (m && m.v === 1 && m.done) ? m : null;
+    } catch (e) { return null; }
+}
+function persistTransSession() {
+    if (transSession) safeLsSet(LS_TRANS_SESSION, JSON.stringify(transSession));
+}
+function clearTransSession() {
+    transSession = null;
+    try { localStorage.removeItem(LS_TRANS_SESSION); localStorage.removeItem(LS_TRANS_SESSION_SRT); } catch (e) { /* ignore */ }
+}
+
+// After a refresh / crash: put the original SRT and the partly translated output back,
+// so TRANSLATE (RESUME ticked) or RETRY only has to do the missing cues.
+function restoreTransSessionOnLoad() {
+    const sess = loadTransSession();
+    const srtText = safeLsGet(LS_TRANS_SESSION_SRT);
+    if (!sess || !srtText || srtInput.value.trim()) return;
+    const subs = parseSrt(srtText);
+    const doneCount = Object.keys(sess.done).length;
+    if (!subs.length || doneCount === 0 || doneCount >= subs.length) return;
+    srtInput.value = srtText;
+    updateSrtInputMeta();
+    if (sess.fileName) lastSrtSourceFileName = sess.fileName;
+    if (sess.targetLang && Array.from(targetLangSelect.options).some(o => o.value === sess.targetLang)) targetLangSelect.value = sess.targetLang;
+    subs.forEach((s, i) => {
+        s._idx = i;
+        const has = sess.done[i] !== undefined;
+        s.translatedText = has ? sess.done[i] : s.textLines.join('\n');
+        s.translationFailed = !has;
+    });
+    lastTranslatedSubs = subs;
+    transSession = sess;
+    const out = rebuildSrt(subs, { preserveIndex: true });
+    srtOutput.value = out;
+    srtOutputMeta.textContent = `Subtitles: ${subs.length} | Characters: ${out.length} (ပြန်ယူထားသော session)`;
+    if (!srtOutputFilenameInput.value.trim() && sess.fileName) srtOutputFilenameInput.value = `${sess.fileName}_${sess.targetLang || 'translated'}`;
+    transProgressPanel.classList.remove('hidden');
+    logTrans(`ယခင် ဘာသာပြန်မပြီးသေးသော session ကို ပြန်ယူထားသည် — ${doneCount}/${subs.length} cue ပြီးပြီ။ TRANSLATE (RESUME ✓) သို့မဟုတ် RETRY နှိပ်ရင် ကျန်တာကိုသာ ဆက်ပြန်ပါမည်။`, 'warn');
+}
+restoreTransSessionOnLoad();
+
+// ---- Glossary matching options (apply to TTS tab too, since the list is shared) ----
+const glossaryWholeWordChk = document.getElementById('glossaryWholeWordChk');
+const glossaryCaseChk = document.getElementById('glossaryCaseChk');
+if (glossaryWholeWordChk) {
+    glossaryWholeWordChk.checked = safeLsGet(LS_GLOSSARY_WHOLE) !== 'false';
+    glossaryWholeWordChk.addEventListener('change', () => safeLsSet(LS_GLOSSARY_WHOLE, glossaryWholeWordChk.checked ? 'true' : 'false'));
+}
+if (glossaryCaseChk) {
+    glossaryCaseChk.checked = safeLsGet(LS_GLOSSARY_CASE) !== 'false';
+    glossaryCaseChk.addEventListener('change', () => safeLsSet(LS_GLOSSARY_CASE, glossaryCaseChk.checked ? 'true' : 'false'));
+}
+
+// ---- Glossary BULK ADD: one "term = replacement" per line ----
+const glossaryBulkInput = document.getElementById('glossaryBulkInput');
+const glossaryBulkAddBtn = document.getElementById('glossaryBulkAddBtn');
+const glossaryBulkMsg = document.getElementById('glossaryBulkMsg');
+
+function parseGlossaryBulk(text) {
+    const pairs = [];
+    let skipped = 0;
+    text.split(/\r?\n/).forEach(line => {
+        const l = line.trim();
+        if (!l) return;
+        const m = l.match(/^(.+?)\s*(?:=>|->|→|=|\t)\s*(.+)$/);
+        if (m && m[1].trim() && m[2].trim()) pairs.push({ term: m[1].trim(), replacement: m[2].trim() });
+        else skipped++;
+    });
+    return { pairs, skipped };
+}
+if (glossaryBulkAddBtn) {
+    glossaryBulkAddBtn.addEventListener('click', () => {
+        const { pairs, skipped } = parseGlossaryBulk(glossaryBulkInput.value);
+        if (!pairs.length) { glossaryBulkMsg.textContent = 'ထည့်စရာ မတွေ့ပါ (ပုံစံ: မူရင်း = အစားထိုး)'; return; }
+        const gloss = getGlossary();
+        let added = 0, updated = 0;
+        pairs.forEach(p => {
+            const hit = gloss.find(g => (g.term || '').toLowerCase() === p.term.toLowerCase());
+            if (hit) { hit.replacement = p.replacement; updated++; }
+            else { gloss.push(p); added++; }
+        });
+        saveGlossary(gloss);
+        renderGlossary();
+        glossaryBulkInput.value = '';
+        glossaryBulkMsg.textContent = `ထည့်ပြီး ${added} / ပြင်ပြီး ${updated}${skipped ? ` / ကျော်ထား ${skipped} ကြောင်း` : ''} ✓`;
+        setTimeout(() => { glossaryBulkMsg.textContent = ''; }, 6000);
+    });
+}
+
+// ---- BACKUP / IMPORT (no API keys are included) ----
+const exportBackupBtn = document.getElementById('exportBackupBtn');
+const importBackupBtn = document.getElementById('importBackupBtn');
+const importBackupFile = document.getElementById('importBackupFile');
+const backupReplaceChk = document.getElementById('backupReplaceChk');
+const backupStatusMsg = document.getElementById('backupStatusMsg');
+function setBackupStatus(msg, ms = 6000) {
+    if (!backupStatusMsg) return;
+    backupStatusMsg.textContent = msg;
+    if (ms) setTimeout(() => { backupStatusMsg.textContent = ''; }, ms);
+}
+
+if (exportBackupBtn) {
+    exportBackupBtn.addEventListener('click', () => {
+        const data = {
+            app: 'neoyangon', version: 1, exportedAt: new Date().toISOString(),
+            glossary: getGlossary(),
+            glossaryEnabled: isGlossaryEnabled(),
+            glossaryWholeWord: safeLsGet(LS_GLOSSARY_WHOLE) !== 'false',
+            glossaryCaseSensitive: safeLsGet(LS_GLOSSARY_CASE) !== 'false',
+            customPrompt: getCustomPrompt(),
+            customPromptEnabled: isCustomPromptEnabled(),
+            contextMemory: getContextMemory(),
+            contextMemoryEnabled: isContextMemoryEnabled(),
+            proofread: isProofreadEnabled()
+        };
+        const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `neoyangon_backup_${new Date().toISOString().slice(0, 10)}.json`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+        setBackupStatus(`Export ပြီးပါပြီ ✓ (Glossary ${data.glossary.length} ခု)`);
+    });
+}
+if (importBackupBtn && importBackupFile) {
+    importBackupBtn.addEventListener('click', () => importBackupFile.click());
+    importBackupFile.addEventListener('change', (e) => {
+        const file = e.target.files[0];
+        e.target.value = '';
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = (evt) => {
+            try {
+                const d = JSON.parse(evt.target.result);
+                if (!d || d.app !== 'neoyangon') throw new Error('ဒီ tool ရဲ့ backup ဖိုင် မဟုတ်ပါ');
+                let msg = [];
+                if (Array.isArray(d.glossary)) {
+                    const clean = d.glossary
+                        .filter(g => g && typeof g.term === 'string' && g.term.trim() && typeof g.replacement === 'string')
+                        .map(g => ({ term: g.term.trim(), replacement: g.replacement.trim() }));
+                    if (backupReplaceChk && backupReplaceChk.checked) {
+                        saveGlossary(clean);
+                    } else {
+                        const gloss = getGlossary();
+                        clean.forEach(p => {
+                            const hit = gloss.find(g => (g.term || '').toLowerCase() === p.term.toLowerCase());
+                            if (hit) hit.replacement = p.replacement; else gloss.push(p);
+                        });
+                        saveGlossary(gloss);
+                    }
+                    msg.push(`Glossary ${clean.length}`);
+                }
+                if (typeof d.glossaryEnabled === 'boolean') safeLsSet(LS_GLOSSARY_ENABLED, d.glossaryEnabled ? 'true' : 'false');
+                if (typeof d.glossaryWholeWord === 'boolean') safeLsSet(LS_GLOSSARY_WHOLE, d.glossaryWholeWord ? 'true' : 'false');
+                if (typeof d.glossaryCaseSensitive === 'boolean') safeLsSet(LS_GLOSSARY_CASE, d.glossaryCaseSensitive ? 'true' : 'false');
+                if (typeof d.customPrompt === 'string') { safeLsSet(LS_CUSTOM_PROMPT, d.customPrompt); msg.push('Custom Prompt'); }
+                if (typeof d.customPromptEnabled === 'boolean') safeLsSet(LS_CUSTOM_PROMPT_ENABLED, d.customPromptEnabled ? 'true' : 'false');
+                if (typeof d.contextMemory === 'string') { saveContextMemory(d.contextMemory); msg.push('Context Memory'); }
+                if (typeof d.contextMemoryEnabled === 'boolean') safeLsSet(LS_CONTEXT_MEMORY_ENABLED, d.contextMemoryEnabled ? 'true' : 'false');
+                if (typeof d.proofread === 'boolean') safeLsSet(LS_PROOFREAD_ENABLED, d.proofread ? 'true' : 'false');
+
+                // refresh every control on screen
+                renderGlossary();
+                const ge = isGlossaryEnabled();
+                if (glossaryEnabledChk) glossaryEnabledChk.checked = ge;
+                if (transGlossaryEnabledChk) transGlossaryEnabledChk.checked = ge;
+                if (glossaryWholeWordChk) glossaryWholeWordChk.checked = safeLsGet(LS_GLOSSARY_WHOLE) !== 'false';
+                if (glossaryCaseChk) glossaryCaseChk.checked = safeLsGet(LS_GLOSSARY_CASE) !== 'false';
+                if (customPromptBox) customPromptBox.value = getCustomPrompt();
+                if (customPromptEnabledChk) customPromptEnabledChk.checked = isCustomPromptEnabled();
+                if (globalContextMemory) globalContextMemory.value = getContextMemory();
+                if (contextMemoryEnabledChk) contextMemoryEnabledChk.checked = isContextMemoryEnabled();
+                if (proofreadPassChk) proofreadPassChk.checked = isProofreadEnabled();
+                setBackupStatus(`Import ပြီးပါပြီ ✓ — ${msg.join(' / ') || 'ဘာမှ မပါပါ'}`);
+            } catch (err) {
+                setBackupStatus(`Import မအောင်မြင်ပါ: ${err.message}`, 9000);
+            }
+        };
+        reader.readAsText(file, 'UTF-8');
+    });
+}
+
+// ---- Auto-extract STOP ----
+if (autoExtractStopBtn) {
+    autoExtractStopBtn.addEventListener('click', () => {
+        translationAborted = true;
+        activeTransControllers.forEach(c => { try { c.abort(); } catch (e) { /* ignore */ } });
+        activeTransControllers = [];
+        autoExtractStopBtn.disabled = true;
+        setCustomPromptStatus('ရပ်နေသည်... ရလာသလောက် သိမ်းပါမည်', 0);
+    });
+}
+
 // The translated SRT box is editable now. Keep the in-memory cues in sync with manual edits
 // (same cue count only) so Copy / Download / Check / Retry / Send-to-TTS all use your changes.
 if (srtOutput) {
