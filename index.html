@@ -518,6 +518,32 @@
                 </div>
             </div>
 
+            <!-- Custom Prompt Box + Auto-extract + Proofread -->
+            <div class="holo-glass holo-corner p-4 sm:p-5 rounded-xl border-purple-500/30">
+                <div class="flex items-center justify-between mb-3">
+                    <div class="flex items-center gap-2">
+                        <i class="fa-solid fa-wand-magic-sparkles text-purple-400 text-sm"></i>
+                        <h3 class="font-orbitron font-semibold text-xs tracking-widest text-purple-300 uppercase">Custom Prompt Box</h3>
+                    </div>
+                    <label class="flex items-center gap-2 font-mono text-[10px] text-cyan-300">
+                        <input type="checkbox" id="customPromptEnabledChk" checked class="accent-cyan-400"> ENABLED
+                    </label>
+                </div>
+                <p class="font-mono text-[10px] text-cyan-500/60 mb-3">ကိုယ်ပိုင် prompt (tone, ဇာတ်ကောင် ကျား/မ, နာမ်စား, အသုံးအနှုန်း စသည်) ကို ဒီမှာ ရေးပါ — Translate တိုင်း prompt ထဲ auto ထည့်ပေးပါမည်။ Auto-extract နဲ့ ဇာတ်ကောင်စာရင်းကိုလည်း ဒီထဲ ထည့်ပေးပါမည်။</p>
+                <textarea id="customPromptBox" rows="5"
+                    class="w-full p-3 rounded-lg bg-black/60 border border-purple-500/30 text-purple-100 placeholder-purple-800/60 font-burmese text-xs leading-relaxed focus:outline-none focus:border-cyan-500/80 resize-y"
+                    placeholder="ဥပမာ - Kai သည် အမျိုးသား၊ Mina သည် အမျိုးသမီး / စကားပြောပုံစံ ရိုးရိုးရှင်းရှင်း..."></textarea>
+                <div class="flex flex-wrap items-center gap-3 mt-3">
+                    <button id="autoExtractBtn" class="px-3 py-1.5 rounded-lg bg-purple-600 hover:bg-purple-500 text-white font-mono text-xs font-bold">
+                        <i class="fa-solid fa-user-tag mr-1"></i> AUTO-EXTRACT (ဇာတ်ကောင် / ကျား-မ / နာမ်စား)
+                    </button>
+                    <label class="flex items-center gap-2 font-mono text-[10px] text-cyan-300">
+                        <input type="checkbox" id="proofreadPassChk" class="accent-cyan-400"> PROOFREAD PASS (ဘာသာပြန်ပြီးရင် တစ်ခါ ပြန်စစ်)
+                    </label>
+                    <span id="customPromptStatus" class="font-mono text-xs text-emerald-400"></span>
+                </div>
+            </div>
+
             <!-- Controls Panel -->
             <div class="holo-glass holo-corner p-5 sm:p-6 rounded-xl border-pink-500/30">
                 <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4">

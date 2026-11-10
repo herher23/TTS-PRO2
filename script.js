@@ -356,7 +356,7 @@ function applyGlossary(text) {
         if (!term) return;
         const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
         const re = new RegExp(escaped, 'g');
-        output = output.replace(re, replacement);
+        output = output.replace(re, () => replacement);
     });
     return output;
 }
@@ -1239,6 +1239,179 @@ if (contextMemoryEnabledChk) {
 // =============================================================
 // Gemini text-translation call (JSON-array structured output)
 // =============================================================
+// =============================================================
+// Custom Prompt Box + Auto-extract (characters / gender / pronouns) + Proofread pass
+// =============================================================
+const LS_CUSTOM_PROMPT = 'neoyangon_custom_prompt';
+const LS_CUSTOM_PROMPT_ENABLED = 'neoyangon_custom_prompt_enabled';
+const LS_PROOFREAD_ENABLED = 'neoyangon_proofread_enabled';
+const customPromptBox = document.getElementById('customPromptBox');
+const customPromptEnabledChk = document.getElementById('customPromptEnabledChk');
+const autoExtractBtn = document.getElementById('autoExtractBtn');
+const proofreadPassChk = document.getElementById('proofreadPassChk');
+const customPromptStatus = document.getElementById('customPromptStatus');
+
+function getCustomPrompt() { return safeLsGet(LS_CUSTOM_PROMPT) || ''; }
+function isCustomPromptEnabled() { return safeLsGet(LS_CUSTOM_PROMPT_ENABLED) !== 'false'; }
+function isProofreadEnabled() { return safeLsGet(LS_PROOFREAD_ENABLED) === 'true'; }
+function setCustomPromptStatus(msg, ms = 4000) {
+    if (!customPromptStatus) return;
+    customPromptStatus.textContent = msg;
+    if (ms) setTimeout(() => { customPromptStatus.textContent = ''; }, ms);
+}
+
+if (customPromptBox) customPromptBox.addEventListener('input', () => safeLsSet(LS_CUSTOM_PROMPT, customPromptBox.value));
+if (customPromptEnabledChk) customPromptEnabledChk.addEventListener('change', () =>
+    safeLsSet(LS_CUSTOM_PROMPT_ENABLED, customPromptEnabledChk.checked ? 'true' : 'false'));
+if (proofreadPassChk) proofreadPassChk.addEventListener('change', () =>
+    safeLsSet(LS_PROOFREAD_ENABLED, proofreadPassChk.checked ? 'true' : 'false'));
+window.addEventListener('DOMContentLoaded', () => {
+    if (customPromptBox) customPromptBox.value = getCustomPrompt();
+    if (customPromptEnabledChk) customPromptEnabledChk.checked = isCustomPromptEnabled();
+    if (proofreadPassChk) proofreadPassChk.checked = isProofreadEnabled();
+});
+
+// One JSON-returning Gemini call on the translator's key/model rotation.
+async function callTransGeminiJson(promptText, responseSchema, timeoutSec, maxTries = 3) {
+    let cred = nextTransCredential();
+    let lastErr;
+    for (let attempt = 0; attempt < maxTries; attempt++) {
+        if (translationAborted) throw new Error('Stopped by user');
+        const controller = new AbortController();
+        activeTransControllers.push(controller);
+        const timer = setTimeout(() => controller.abort(), Math.max(timeoutSec, 10) * 1000);
+        try {
+            const payload = {
+                contents: [{ parts: [{ text: promptText }] }],
+                generationConfig: { responseMimeType: "application/json", responseSchema }
+            };
+            const apiUrl = `https://vpn2-pro.herher650.workers.dev/?https://generativelanguage.googleapis.com/v1beta/models/${cred.model}:generateContent?key=${cred.key}`;
+            const response = await fetch(apiUrl, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload),
+                signal: controller.signal
+            });
+            clearTimeout(timer);
+            if (!response.ok) {
+                lastErr = new Error(`HTTP ${response.status}`);
+                if ([400, 401, 403, 404, 429].includes(response.status)) { cred = advanceTransCredential() || cred; continue; }
+                throw lastErr;
+            }
+            const data = await response.json();
+            const raw = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+            if (!raw) throw new Error('Empty response from model');
+            return JSON.parse(raw.trim().replace(/^```json\s*/i, '').replace(/^```\s*/, '').replace(/```\s*$/, ''));
+        } catch (e) {
+            clearTimeout(timer);
+            lastErr = e.name === 'AbortError' ? new Error('Timeout') : e;
+            cred = advanceTransCredential() || cred;
+        } finally {
+            activeTransControllers = activeTransControllers.filter(c => c !== controller);
+        }
+    }
+    throw lastErr || new Error('Gemini call failed');
+}
+
+// AUTO-EXTRACT: names -> Glossary (term -> Burmese name); gender / pronoun notes -> Custom Prompt Box.
+// Only the managed block between the markers is replaced, anything you typed yourself is untouched.
+const AUTO_NOTES_START = '[AUTO CHARACTER NOTES]';
+const AUTO_NOTES_END = '[/AUTO CHARACTER NOTES]';
+
+async function autoExtractCharacters() {
+    const subs = parseSrt(srtInput.value);
+    if (!subs.length) { setCustomPromptStatus('SRT မရှိသေးပါ — မူရင်း SRT အရင်ထည့်ပါ'); return; }
+    autoExtractBtn.disabled = true;
+    setCustomPromptStatus('ဇာတ်ကောင်များ ထုတ်ယူနေသည်...', 0);
+    translationAborted = false;
+    try {
+        const all = subs.map(x => x.textLines.join(' ')).join('\n');
+        let sample = all;
+        if (all.length > 12000) {
+            const mid = Math.floor(all.length / 2);
+            sample = all.slice(0, 4000) + '\n...\n' + all.slice(mid - 2000, mid + 2000) + '\n...\n' + all.slice(-4000);
+        }
+        const prompt = `Read these subtitle lines and list the recurring characters / named people.
+For each: "name" (as written in the source), "burmese" (a natural Myanmar-script rendering of the name, standard Unicode, no punctuation marks), "gender" (male / female / unknown — only if the text clearly shows it), and "note" (very short: how others address or refer to them, e.g. relationship or honorific, in Myanmar if possible).
+Only include real recurring characters, not generic words. Maximum 20 entries. Output JSON only.
+
+Subtitles:
+${sample}`;
+        const schema = { type: "OBJECT", properties: { characters: { type: "ARRAY", items: { type: "OBJECT",
+            properties: { name: { type: "STRING" }, burmese: { type: "STRING" }, gender: { type: "STRING" }, note: { type: "STRING" } },
+            required: ["name", "burmese", "gender"] } } }, required: ["characters"] };
+        const result = await callTransGeminiJson(prompt, schema, 90, 3);
+        const chars = (result.characters || []).filter(c => c && c.name && c.name.trim());
+        if (!chars.length) { setCustomPromptStatus('ဇာတ်ကောင် မတွေ့ပါ'); return; }
+
+        const gloss = getGlossary();
+        let added = 0;
+        chars.forEach(c => {
+            const term = c.name.trim(), repl = (c.burmese || '').trim();
+            if (repl && repl !== term && !gloss.some(g => g.term === term)) { gloss.push({ term, replacement: repl }); added++; }
+        });
+        saveGlossary(gloss);
+        renderGlossary();
+
+        const lines = chars.map(c => `- ${c.name.trim()} (${(c.burmese || '').trim()}): ${c.gender || 'unknown'}${c.note ? ' — ' + c.note.trim() : ''}`);
+        const block = `${AUTO_NOTES_START}\nKeep each character's gender and the way others address them consistent in every line:\n${lines.join('\n')}\n${AUTO_NOTES_END}`;
+        let text = customPromptBox.value;
+        const a = text.indexOf(AUTO_NOTES_START), b = text.indexOf(AUTO_NOTES_END);
+        text = (a !== -1 && b > a)
+            ? text.slice(0, a) + block + text.slice(b + AUTO_NOTES_END.length)
+            : (text.trim() ? text.replace(/\s+$/, '') + '\n\n' : '') + block;
+        customPromptBox.value = text;
+        saveCustomPromptFromBox();
+        setCustomPromptStatus(`ပြီးပါပြီ ✓ ဇာတ်ကောင် ${chars.length} ယောက် / Glossary အသစ် ${added} ခု`, 6000);
+    } catch (e) {
+        setCustomPromptStatus(`FAILED: ${e.message}`, 8000);
+    } finally {
+        autoExtractBtn.disabled = false;
+    }
+}
+function saveCustomPromptFromBox() { safeLsSet(LS_CUSTOM_PROMPT, customPromptBox.value); }
+if (autoExtractBtn) autoExtractBtn.addEventListener('click', autoExtractCharacters);
+
+// PROOFREAD PASS: one more Gemini check over the finished translation, 40 cues at a time.
+// Fixes mistranslation vs. source, inconsistent names/gender/pronouns and typos only.
+// Cue count, numbers and timestamps are never touched — only translatedText is replaced,
+// and a chunk whose reply has the wrong item count is skipped rather than applied.
+async function proofreadTranslatedSubs(subs, targetLang, timeoutSec) {
+    const isMyanmar = targetLang === 'Myanmar (Burmese)';
+    const custom = (isCustomPromptEnabled() ? getCustomPrompt() : '').trim();
+    const glossNames = getGlossary().filter(g => g.term).map(g => `${g.term} = ${g.replacement}`).join('; ');
+    const schema = { type: "ARRAY", items: { type: "STRING" } };
+    const targets = subs.filter(x => !x.translationFailed && x.translatedText && String(x.translatedText).trim());
+    const chunks = chunkArray(targets, 40);
+    let changed = 0;
+    for (let ci = 0; ci < chunks.length; ci++) {
+        if (translationAborted) { logTrans('Proofreading ကို ရပ်လိုက်ပါသည်။', 'warn'); return; }
+        const chunk = chunks[ci];
+        const items = chunk.map((x, i) => ({ n: i + 1, source: x.textLines.join(' / '), translation: x.translatedText }));
+        const prompt = `You are a careful proofreader for ${targetLang} subtitles.
+For each item, compare "translation" with "source" and return the corrected translation.
+Fix ONLY: wrong meaning, inconsistent character names / gender / pronouns, spelling mistakes, unnatural or broken phrasing.
+If an item is already good, return it EXACTLY unchanged. Keep the same length style (short subtitle lines) and keep any line break as is.
+Return a JSON array of strings with exactly ${items.length} items in the same order. No notes.${isMyanmar ? '\nNever use the marks "။" "၊" "!" "?".' : ''}
+${glossNames ? `Glossary (keep these forms): ${glossNames}\n` : ''}${custom ? `User instructions:\n${custom}\n` : ''}
+Items:
+${JSON.stringify(items)}`;
+        try {
+            const out = await callTransGeminiJson(prompt, schema, timeoutSec, 2);
+            if (!Array.isArray(out) || out.length !== chunk.length) { logTrans(`Proofread chunk ${ci + 1}: item အရေအတွက် မကိုက်ပါ — ကျော်ခဲ့သည်`, 'warn'); continue; }
+            out.forEach((t, i) => {
+                let fixed = String(t).trim();
+                if (isMyanmar) fixed = sanitizeMyanmarPunctuation(fixed);
+                if (fixed && fixed !== chunk[i].translatedText) { chunk[i].translatedText = fixed; changed++; }
+            });
+            logTrans(`Proofread ${ci + 1}/${chunks.length} ✓`, 'ok');
+        } catch (e) {
+            logTrans(`Proofread chunk ${ci + 1} မအောင်မြင်ပါ (${e.message}) — မူလအတိုင်း ထားသည်`, 'warn');
+        }
+    }
+    logTrans(`Proofreading ပြီးပါပြီ — cue ${changed} ခု ပြင်ခဲ့သည်`, 'ok');
+}
+
 function buildTranslationPrompt(lines, targetLang) {
     const numbered = lines.map((l, i) => `${i + 1}. ${l.replace(/\n/g, ' / ')}`).join('\n');
     const isMyanmar = targetLang === 'Myanmar (Burmese)';
@@ -1246,6 +1419,10 @@ function buildTranslationPrompt(lines, targetLang) {
     const contextMemory = (isContextMemoryEnabled() ? getContextMemory() : '').trim();
     const contextBlock = contextMemory
         ? `\nAdditional context / instructions from the user (follow these while translating):\n${contextMemory}\n`
+        : '';
+    const customPrompt = (isCustomPromptEnabled() ? getCustomPrompt() : '').trim();
+    const customBlock = customPrompt
+        ? `\nCustom prompt from the user (highest priority — follow strictly):\n${customPrompt}\n`
         : '';
 
     const myanmarRules = isMyanmar ? `
@@ -1263,7 +1440,7 @@ Rules:
 - Do not add explanations, notes, or the original text — only the translation.
 - Line length: only break a translated line in two when it is genuinely too long to read comfortably at a glance (roughly beyond ~42 characters, adjusted naturally for the target script's visual width) — a short or already-readable line must stay on a single line, do not wrap it unnecessarily. When a break is needed, insert a single literal "\\n" at a natural phrase boundary inside that same JSON string — never more than 2 lines total, and never as a separate array item. This only reflows text within the cue's existing timestamp block; it must never change the timing or the cue number.
 - Output ONLY a JSON array of strings (one translated string per input line) — plain subtitle text with no numbering, no timestamps, and no markdown, ready to be dropped straight into a professional .srt file.${myanmarRules}
-${contextBlock}
+${contextBlock}${customBlock}
 Subtitle lines to translate:
 ${numbered}`;
 }
@@ -1821,8 +1998,19 @@ async function handleTranslateSrt() {
         if (!srtOutputFilenameInput.value.trim()) {
             srtOutputFilenameInput.value = lastSrtSourceFileName ? `${lastSrtSourceFileName}_${targetLang}` : `translated_${targetLang}_${Date.now()}`;
         }
-        outputDoneBadge.classList.remove('hidden');
-        logTrans('ဘာသာပြန်ခြင်း အားလုံးပြီးဆုံးပါပြီ ✓', 'ok');
+        if (!translationAborted && isProofreadEnabled()) {
+            logTrans('Proofreading pass စတင်ပါပြီ...');
+            await proofreadTranslatedSubs(translatedSubs, targetLang, timeoutSec);
+            const proofed = rebuildSrt(translatedSubs, { preserveIndex: true });
+            srtOutput.value = proofed;
+            srtOutputMeta.textContent = `Subtitles: ${translatedSubs.length} | Characters: ${proofed.length}`;
+        }
+        if (translationAborted) {
+            logTrans('တစ်စိတ်တစ်ပိုင်းသာ ပြီးပါသည် (ရပ်တန့်ထားသည်) — မပြန်ရသေးသော cue များကို RETRY နှိပ်ပါ။', 'warn');
+        } else {
+            outputDoneBadge.classList.remove('hidden');
+            logTrans('ဘာသာပြန်ခြင်း အားလုံးပြီးဆုံးပါပြီ ✓', 'ok');
+        }
 
     } catch (err) {
         console.error('SRT Translation Error:', err);
@@ -2929,7 +3117,11 @@ async function callGeminiSrtJson(parts, tag, maxRetries, timeoutSec, onLog, allo
             if (!raw) throw new Error('Empty response from model');
 
             const obj = extractJsonObject(raw);
-            if (!obj.srt || !obj.srt.trim()) throw new Error('Incomplete response from model');
+            if (typeof obj.srt !== 'string') throw new Error('Incomplete response from model');
+            if (!obj.srt.trim()) {
+                if (allowEmpty) return '';
+                throw new Error('Incomplete response from model');
+            }
             return obj.srt.trim() + '\n';
 
         } catch (e) {
