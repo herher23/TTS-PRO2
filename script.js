@@ -2485,6 +2485,25 @@ if (importBackupBtn && importBackupFile) {
     });
 }
 
+// ---- Custom Prompt Box CLEAR (press twice within 3 s to confirm — no popup dialogs) ----
+const clearCustomPromptBtn = document.getElementById('clearCustomPromptBtn');
+if (clearCustomPromptBtn) {
+    const clearLabel = clearCustomPromptBtn.querySelector('span');
+    let armedTimer = null;
+    const disarm = () => { clearTimeout(armedTimer); armedTimer = null; clearLabel.textContent = 'CLEAR'; };
+    clearCustomPromptBtn.addEventListener('click', () => {
+        if (!armedTimer) {
+            clearLabel.textContent = 'ထပ်နှိပ်ပါ — အတည်ပြု';
+            armedTimer = setTimeout(disarm, 3000);
+            return;
+        }
+        disarm();
+        customPromptBox.value = '';
+        saveCustomPromptFromBox();
+        setCustomPromptStatus('Custom Prompt ရှင်းပြီးပါပြီ ✓');
+    });
+}
+
 // ---- Auto-extract STOP ----
 if (autoExtractStopBtn) {
     autoExtractStopBtn.addEventListener('click', () => {
