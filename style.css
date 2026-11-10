@@ -211,6 +211,8 @@ input[type=range]::-webkit-slider-thumb {
 }
 .glossary-row button:hover { opacity: 1; }
 .glossary-row .glossary-edit-btn { color: #00f3ff; }
+.glossary-row .glossary-save-btn { color: #00ffaa; opacity: 1; padding: 0 6px; }
+.glossary-row .glossary-cancel-btn { color: #ff0055; padding: 0 6px; }
 
 /* The smallest meta/log text (Tailwind's text-[10px]) is hard to read in Myanmar (Padauk),
    which needs a bit more room per glyph than Latin text at the same pixel size. */

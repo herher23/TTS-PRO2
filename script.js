@@ -307,6 +307,8 @@ function isGlossaryEnabled() {
 // Global Memory / Glossary is one shared list (LS_GLOSSARY) rendered into every
 // glossary-list container present on the page — currently the TTS tab's #glossaryList
 // and the Translator tab's #transGlossaryList. Editing from either tab updates both.
+let glossaryEditIdx = -1; // row currently shown as two inline input boxes (-1 = none)
+
 function renderGlossary() {
     const list = getGlossary();
     const containers = [glossaryList, transGlossaryList].filter(Boolean);
@@ -320,6 +322,51 @@ function renderGlossary() {
         list.forEach((entry, i) => {
             const row = document.createElement('div');
             row.className = 'glossary-row';
+
+            if (i === glossaryEditIdx) {
+                row.style.flexWrap = 'wrap';
+                const mkInput = (val, ph) => {
+                    const inp = document.createElement('input');
+                    inp.type = 'text';
+                    inp.value = val || '';
+                    inp.placeholder = ph;
+                    inp.className = 'flex-1 min-w-0 p-1.5 rounded bg-black/60 border border-yellow-500/40 text-yellow-100 font-burmese text-xs focus:outline-none focus:border-cyan-500/80';
+                    return inp;
+                };
+                const termInp = mkInput(entry.term, 'မူရင်း စကားလုံး');
+                const replInp = mkInput(entry.replacement, 'အစားထိုး စကားလုံး');
+                const saveBtn = document.createElement('button');
+                saveBtn.className = 'glossary-save-btn';
+                saveBtn.title = 'Save';
+                saveBtn.innerHTML = '<i class="fa-solid fa-check"></i>';
+                const cancelBtn = document.createElement('button');
+                cancelBtn.className = 'glossary-cancel-btn';
+                cancelBtn.title = 'Cancel';
+                cancelBtn.innerHTML = '<i class="fa-solid fa-xmark"></i>';
+
+                const commit = () => {
+                    const t = termInp.value.trim();
+                    if (!t) return;
+                    const cur = getGlossary();
+                    if (!cur[i]) return;
+                    cur[i] = { term: t, replacement: replInp.value.trim() };
+                    saveGlossary(cur);
+                    glossaryEditIdx = -1;
+                    renderGlossary();
+                };
+                const cancel = () => { glossaryEditIdx = -1; renderGlossary(); };
+                saveBtn.addEventListener('click', commit);
+                cancelBtn.addEventListener('click', cancel);
+                [termInp, replInp].forEach(inp => inp.addEventListener('keydown', ev => {
+                    if (ev.key === 'Enter') { ev.preventDefault(); commit(); }
+                    if (ev.key === 'Escape') cancel();
+                }));
+
+                row.append(termInp, replInp, saveBtn, cancelBtn);
+                container.appendChild(row);
+                return;
+            }
+
             row.innerHTML = `
                 <span class="text-yellow-200 truncate">${escapeHtml(entry.term)}</span>
                 <i class="fa-solid fa-arrow-right text-cyan-500 text-[10px]"></i>
@@ -333,16 +380,7 @@ function renderGlossary() {
 
     document.querySelectorAll('.glossary-edit-btn').forEach(btn => {
         btn.addEventListener('click', () => {
-            const idx = parseInt(btn.dataset.idx, 10);
-            const list = getGlossary();
-            const cur = list[idx];
-            if (!cur) return;
-            const newTerm = prompt('မူရင်း စကားလုံး', cur.term);
-            if (newTerm === null || !newTerm.trim()) return;
-            const newRepl = prompt('အစားထိုး စကားလုံး', cur.replacement);
-            if (newRepl === null) return;
-            list[idx] = { term: newTerm.trim(), replacement: newRepl.trim() };
-            saveGlossary(list);
+            glossaryEditIdx = parseInt(btn.dataset.idx, 10);
             renderGlossary();
         });
     });
@@ -353,6 +391,7 @@ function renderGlossary() {
             const list = getGlossary();
             list.splice(idx, 1);
             saveGlossary(list);
+            glossaryEditIdx = -1;
             renderGlossary();
         });
     });
