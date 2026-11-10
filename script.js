@@ -324,9 +324,26 @@ function renderGlossary() {
                 <span class="text-yellow-200 truncate">${escapeHtml(entry.term)}</span>
                 <i class="fa-solid fa-arrow-right text-cyan-500 text-[10px]"></i>
                 <span class="text-cyan-200 truncate flex-1">${escapeHtml(entry.replacement)}</span>
-                <button data-idx="${i}" class="glossary-del-btn"><i class="fa-solid fa-xmark"></i></button>
+                <button data-idx="${i}" class="glossary-edit-btn" title="Edit"><i class="fa-solid fa-pen"></i></button>
+                <button data-idx="${i}" class="glossary-del-btn" title="Delete"><i class="fa-solid fa-xmark"></i></button>
             `;
             container.appendChild(row);
+        });
+    });
+
+    document.querySelectorAll('.glossary-edit-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const idx = parseInt(btn.dataset.idx, 10);
+            const list = getGlossary();
+            const cur = list[idx];
+            if (!cur) return;
+            const newTerm = prompt('မူရင်း စကားလုံး', cur.term);
+            if (newTerm === null || !newTerm.trim()) return;
+            const newRepl = prompt('အစားထိုး စကားလုံး', cur.replacement);
+            if (newRepl === null) return;
+            list[idx] = { term: newTerm.trim(), replacement: newRepl.trim() };
+            saveGlossary(list);
+            renderGlossary();
         });
     });
 
@@ -401,7 +418,8 @@ if (transGlossaryEnabledChk) {
 // Applies every glossary entry as a global (whole-conversation) find/replace pass
 function applyGlossary(text) {
     if (!isGlossaryEnabled()) return text;
-    const list = getGlossary();
+    // Longest term first, so a short name ("John") can never break a longer one ("Johnny")
+    const list = getGlossary().slice().sort((a, b) => (b.term || '').length - (a.term || '').length);
     let output = text;
     list.forEach(({ term, replacement }) => {
         if (!term) return;
@@ -1403,39 +1421,72 @@ async function autoExtractCharacters() {
     const subs = parseSrt(srtInput.value);
     if (!subs.length) { setCustomPromptStatus('SRT မရှိသေးပါ — မူရင်း SRT အရင်ထည့်ပါ'); return; }
     autoExtractBtn.disabled = true;
-    setCustomPromptStatus('ဇာတ်ကောင်များ ထုတ်ယူနေသည်...', 0);
     translationAborted = false;
     try {
-        const all = subs.map(x => x.textLines.join(' ')).join('\n');
-        let sample = all;
-        if (all.length > 12000) {
-            const mid = Math.floor(all.length / 2);
-            sample = all.slice(0, 4000) + '\n...\n' + all.slice(mid - 2000, mid + 2000) + '\n...\n' + all.slice(-4000);
-        }
-        const prompt = `Read these subtitle lines and list the recurring characters / named people.
-For each: "name" (as written in the source), "burmese" (a natural Myanmar-script rendering of the name, standard Unicode, no punctuation marks), "gender" (male / female / unknown — only if the text clearly shows it), and "note" (very short: how others address or refer to them, e.g. relationship or honorific, in Myanmar if possible).
-Only include real recurring characters, not generic words. Maximum 20 entries. Output JSON only.
+        // Split the WHOLE SRT (not a 12k sample) into ~7000-char pieces so every cue is read.
+        const pieces = [];
+        let cur = '';
+        subs.forEach(x => {
+            const line = x.textLines.join(' ');
+            if (cur && cur.length + line.length + 1 > 7000) { pieces.push(cur); cur = ''; }
+            cur += (cur ? '\n' : '') + line;
+        });
+        if (cur) pieces.push(cur);
+
+        const schema = { type: "OBJECT", properties: { characters: { type: "ARRAY", items: { type: "OBJECT",
+            properties: { name: { type: "STRING" }, burmese: { type: "STRING" }, gender: { type: "STRING" },
+                          pronouns: { type: "STRING" }, note: { type: "STRING" } },
+            required: ["name", "burmese", "gender"] } } }, required: ["characters"] };
+
+        const found = new Map(); // lower-case name -> merged entry
+        let failedPieces = 0;
+        for (let i = 0; i < pieces.length; i++) {
+            if (translationAborted) break;
+            setCustomPromptStatus(`ဇာတ်ကောင် / နာမ်စား ထုတ်ယူနေသည်... ${i + 1}/${pieces.length}`, 0);
+            const prompt = `Read these subtitle lines and list EVERY named person / character that appears or is mentioned — including ones that appear only once. Do not skip anyone and do not stop at a fixed number.
+For each person give:
+- "name": exactly as written in the source
+- "burmese": a natural Myanmar-script rendering of the name (standard Unicode, no punctuation marks)
+- "gender": male / female / unknown (only if the text clearly shows it, e.g. he/she, Mr/Mrs, brother/sister)
+- "pronouns": how this person refers to themself and how others address / refer to them (I / you / he / she / they, honorifics, kinship terms), written in Myanmar, e.g. "ကိုယ်တိုင်: ကျွန်တော် / တခြားသူက: သူ၊ ကိုကို" — empty if the text does not show it
+- "note": very short relationship / role note (Myanmar if possible)
+Skip generic words that are not names. Output JSON only.
 
 Subtitles:
-${sample}`;
-        const schema = { type: "OBJECT", properties: { characters: { type: "ARRAY", items: { type: "OBJECT",
-            properties: { name: { type: "STRING" }, burmese: { type: "STRING" }, gender: { type: "STRING" }, note: { type: "STRING" } },
-            required: ["name", "burmese", "gender"] } } }, required: ["characters"] };
-        const result = await callTransGeminiJson(prompt, schema, 90, 3);
-        const chars = (result.characters || []).filter(c => c && c.name && c.name.trim());
-        if (!chars.length) { setCustomPromptStatus('ဇာတ်ကောင် မတွေ့ပါ'); return; }
+${pieces[i]}`;
+            try {
+                const result = await callTransGeminiJson(prompt, schema, 90, 3);
+                (result.characters || []).forEach(c => {
+                    if (!c || !c.name || !c.name.trim()) return;
+                    const key = c.name.trim().toLowerCase();
+                    const prev = found.get(key);
+                    if (!prev) { found.set(key, { name: c.name.trim(), burmese: (c.burmese || '').trim(), gender: (c.gender || 'unknown').trim(), pronouns: (c.pronouns || '').trim(), note: (c.note || '').trim() }); return; }
+                    if (!prev.burmese && c.burmese) prev.burmese = c.burmese.trim();
+                    if ((!prev.gender || prev.gender === 'unknown') && c.gender) prev.gender = c.gender.trim();
+                    if (!prev.pronouns && c.pronouns) prev.pronouns = c.pronouns.trim();
+                    if (!prev.note && c.note) prev.note = c.note.trim();
+                });
+            } catch (e) {
+                if (translationAborted) break;
+                failedPieces++;
+                if (typeof logTrans === 'function') logTrans(`Auto-extract ${i + 1}/${pieces.length} မအောင်မြင်ပါ (${e.message})`, 'warn');
+            }
+        }
+
+        const chars = Array.from(found.values());
+        if (!chars.length) { setCustomPromptStatus(failedPieces ? `FAILED: ${failedPieces} piece မအောင်မြင်ပါ` : 'ဇာတ်ကောင် မတွေ့ပါ', 8000); return; }
 
         const gloss = getGlossary();
         let added = 0;
         chars.forEach(c => {
-            const term = c.name.trim(), repl = (c.burmese || '').trim();
-            if (repl && repl !== term && !gloss.some(g => g.term === term)) { gloss.push({ term, replacement: repl }); added++; }
+            const term = c.name, repl = c.burmese;
+            if (repl && repl !== term && !gloss.some(g => (g.term || '').toLowerCase() === term.toLowerCase())) { gloss.push({ term, replacement: repl }); added++; }
         });
         saveGlossary(gloss);
         renderGlossary();
 
-        const lines = chars.map(c => `- ${c.name.trim()} (${(c.burmese || '').trim()}): ${c.gender || 'unknown'}${c.note ? ' — ' + c.note.trim() : ''}`);
-        const block = `${AUTO_NOTES_START}\nKeep each character's gender and the way others address them consistent in every line:\n${lines.join('\n')}\n${AUTO_NOTES_END}`;
+        const lines = chars.map(c => `- ${c.name} (${c.burmese}): ${c.gender || 'unknown'}${c.pronouns ? ' | နာမ်စား: ' + c.pronouns : ''}${c.note ? ' — ' + c.note : ''}`);
+        const block = `${AUTO_NOTES_START}\nKeep each character's name spelling, gender, and the pronouns / address terms they use consistent in every line:\n${lines.join('\n')}\n${AUTO_NOTES_END}`;
         let text = customPromptBox.value;
         const a = text.indexOf(AUTO_NOTES_START), b = text.indexOf(AUTO_NOTES_END);
         text = (a !== -1 && b > a)
@@ -1443,7 +1494,7 @@ ${sample}`;
             : (text.trim() ? text.replace(/\s+$/, '') + '\n\n' : '') + block;
         customPromptBox.value = text;
         saveCustomPromptFromBox();
-        setCustomPromptStatus(`ပြီးပါပြီ ✓ ဇာတ်ကောင် ${chars.length} ယောက် / Glossary အသစ် ${added} ခု`, 6000);
+        setCustomPromptStatus(`ပြီးပါပြီ ✓ ဇာတ်ကောင် ${chars.length} ယောက် / Glossary အသစ် ${added} ခု${failedPieces ? ` / မအောင်မြင် ${failedPieces} piece` : ''}`, 8000);
     } catch (e) {
         setCustomPromptStatus(`FAILED: ${e.message}`, 8000);
     } finally {
@@ -1512,6 +1563,11 @@ function buildTranslationPrompt(lines, targetLang) {
 - Also NEVER use the Western exclamation mark "!" or question mark "?" anywhere in the output.
 - Write clean subtitle-style Burmese sentences without any of the punctuation marks listed above.` : '';
 
+    const glossEntries = isGlossaryEnabled() ? getGlossary().filter(g => g.term && g.replacement) : [];
+    const glossBlock = glossEntries.length
+        ? `\nGlossary (for these source names / terms, ALWAYS use exactly the given form in the translation):\n${glossEntries.map(g => `${g.term} => ${g.replacement}`).join('\n')}\n`
+        : '';
+
     return `You are a professional subtitle translator localizing a video subtitle file into ${targetLang}.
 
 Rules:
@@ -1521,7 +1577,7 @@ Rules:
 - Do not add explanations, notes, or the original text — only the translation.
 - Line length: only break a translated line in two when it is genuinely too long to read comfortably at a glance (roughly beyond ~42 characters, adjusted naturally for the target script's visual width) — a short or already-readable line must stay on a single line, do not wrap it unnecessarily. When a break is needed, insert a single literal "\\n" at a natural phrase boundary inside that same JSON string — never more than 2 lines total, and never as a separate array item. This only reflows text within the cue's existing timestamp block; it must never change the timing or the cue number.
 - Output ONLY a JSON array of strings (one translated string per input line) — plain subtitle text with no numbering, no timestamps, and no markdown, ready to be dropped straight into a professional .srt file.${myanmarRules}
-${contextBlock}${customBlock}
+${contextBlock}${customBlock}${glossBlock}
 Subtitle lines to translate:
 ${numbered}`;
 }
@@ -2115,6 +2171,22 @@ function handleStopTranslate() {
 // =============================================================
 // Copy / Download / Send-to-TTS
 // =============================================================
+// The translated SRT box is editable now. Keep the in-memory cues in sync with manual edits
+// (same cue count only) so Copy / Download / Check / Retry / Send-to-TTS all use your changes.
+if (srtOutput) {
+    srtOutput.addEventListener('input', () => {
+        const edited = parseSrt(srtOutput.value);
+        srtOutputMeta.textContent = `Subtitles: ${edited.length} | Characters: ${srtOutput.value.length} (edited)`;
+        if (lastTranslatedSubs && lastTranslatedSubs.length === edited.length) {
+            edited.forEach((e, i) => {
+                lastTranslatedSubs[i].translatedText = e.textLines.join('\n');
+                lastTranslatedSubs[i].timeLine = e.timeLine;
+                if (e.originalIndex) lastTranslatedSubs[i].originalIndex = e.originalIndex;
+            });
+        }
+    });
+}
+
 copySrtBtn.addEventListener('click', async () => {
     if (!srtOutput.value) return;
     try {
