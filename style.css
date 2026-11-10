@@ -35,8 +35,14 @@ body {
 
 [data-theme="light"] textarea,
 [data-theme="light"] select,
-[data-theme="light"] input[type="text"] {
+[data-theme="light"] input[type="text"],
+[data-theme="light"] input[type="number"] {
     color: #101322 !important;
+    background-color: rgba(255, 255, 255, 0.92) !important;
+}
+[data-theme="light"] textarea::placeholder,
+[data-theme="light"] input::placeholder {
+    color: rgba(16, 19, 34, 0.45) !important;
 }
 
 /* 2026 Glassmorphism Panels */

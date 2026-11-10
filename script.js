@@ -70,6 +70,7 @@ let audioCtx;
 let analyser;
 let audioSource;
 let clarityFilterNode;
+let reverbWetNode;
 let animationFrameId;
 
 let currentAudioBlob = null;
@@ -186,6 +187,54 @@ toggleKeyPanelBtn.addEventListener('click', () => {
 });
 
 // =============================================================
+// B13: session-level key health, shared by every Gemini picker below.
+//  - 401/403 or a "key not valid" 400  -> key is blacklisted for this page session
+//  - 429                               -> key sits out for its Retry-After (default 60s)
+// next()/advance() skip unhealthy keys. If EVERY key is unhealthy the filter is ignored so the
+// app never deadlocks. Detected by watching responses to Gemini requests (no call-site changes).
+const keyBlacklist = new Set();
+const keyCooldownUntil = new Map();
+function isKeyHealthy(key) {
+    if (keyBlacklist.has(key)) return false;
+    const until = keyCooldownUntil.get(key);
+    return !(until && until > Date.now());
+}
+function pickHealthyKeyIdx(keys, startIdx) {
+    for (let d = 0; d < keys.length; d++) {
+        const idx = (startIdx + d) % keys.length;
+        if (isKeyHealthy(keys[idx])) return idx;
+    }
+    return startIdx % keys.length;
+}
+(function installGeminiKeyHealthWatcher() {
+    if (typeof window.fetch !== 'function' || window.__keyHealthWatcher) return;
+    window.__keyHealthWatcher = true;
+    const origFetch = window.fetch.bind(window);
+    window.fetch = async function (input, init) {
+        const res = await origFetch(input, init);
+        try {
+            const url = typeof input === 'string' ? input : (input && input.url) || '';
+            if (url.includes('generativelanguage.googleapis.com')) {
+                const m = url.match(/[?&]key=([^&]+)$/) || url.match(/[?&]key=([^&]+)/);
+                const key = m ? decodeURIComponent(m[1]) : null;
+                if (key) {
+                    if (res.status === 401 || res.status === 403) {
+                        keyBlacklist.add(key);
+                        console.warn(`Gemini key …${key.slice(-4)} → HTTP ${res.status}: ဒီ session အတွက် ဖယ်ထားပါသည်`);
+                    } else if (res.status === 429) {
+                        const ra = parseFloat(res.headers.get('retry-after'));
+                        keyCooldownUntil.set(key, Date.now() + (isFinite(ra) && ra > 0 ? ra * 1000 : 60000));
+                    } else if (res.status === 400) {
+                        const body = await res.clone().text();
+                        if (/API_KEY_INVALID|API key not valid/i.test(body)) keyBlacklist.add(key);
+                    }
+                }
+            }
+        } catch (e) { /* health tracking must never break a request */ }
+        return res;
+    };
+})();
+
 // Shared round-robin "key + model" credential picker factory.
 // Used by the TTS engine, Translator, AI Timestamp Fix / AI SRT Format, and Recap Studio —
 // four tabs that each previously hand-copied an almost-identical next*/advance* pair (5
@@ -200,7 +249,7 @@ function makeGeminiCredentialPicker(modelIdxKey, getModelsFn, noKeyMsg) {
         const models = getModelsFn();
         if (keys.length === 0) throw new Error(noKeyMsg);
 
-        const keyIdx = getIndex(LS_KEY_IDX, keys.length);
+        const keyIdx = pickHealthyKeyIdx(keys, getIndex(LS_KEY_IDX, keys.length));
         const modelIdx = getIndex(modelIdxKey, models.length);
 
         // advance pointers for the NEXT call (round-robin across every request)
@@ -224,8 +273,10 @@ function makeGeminiCredentialPicker(modelIdxKey, getModelsFn, noKeyMsg) {
             const modelIdx = getIndex(modelIdxKey, models.length);
             setIndex(modelIdxKey, modelIdx + 1, models.length);
         }
+        const healthyIdx = pickHealthyKeyIdx(keys, getIndex(LS_KEY_IDX, keys.length));
+        setIndex(LS_KEY_IDX, healthyIdx, keys.length);
         updateBadges();
-        return { key: keys[getIndex(LS_KEY_IDX, keys.length)], model: models[getIndex(modelIdxKey, models.length)] };
+        return { key: keys[healthyIdx], model: models[getIndex(modelIdxKey, models.length)] };
     }
 
     return { next, advance };
@@ -435,6 +486,11 @@ function setupBackgroundCanvas() {
         color: Math.random() > 0.5 ? 'rgba(0, 243, 255, ' : 'rgba(255, 0, 85, '
     }));
 
+    // Respect prefers-reduced-motion (draw one still frame) and stop animating while the tab is hidden.
+    const motionQuery = window.matchMedia ? window.matchMedia('(prefers-reduced-motion: reduce)') : { matches: false };
+    let reduceMotion = motionQuery.matches;
+    let rafId = null;
+
     function drawBg() {
         ctx.clearRect(0, 0, bgCanvas.width, bgCanvas.height);
 
@@ -467,9 +523,18 @@ function setupBackgroundCanvas() {
             ctx.fill();
         });
 
-        requestAnimationFrame(drawBg);
+        rafId = (reduceMotion || document.hidden) ? null : requestAnimationFrame(drawBg);
     }
     drawBg();
+    document.addEventListener('visibilitychange', () => {
+        if (!document.hidden && rafId === null && !reduceMotion) drawBg();
+    });
+    if (motionQuery.addEventListener) {
+        motionQuery.addEventListener('change', (e) => {
+            reduceMotion = e.matches;
+            if (!reduceMotion && rafId === null) drawBg();
+        });
+    }
 }
 
 function setupEventListeners() {
@@ -511,6 +576,7 @@ function setupEventListeners() {
         cyberReverbActive = !cyberReverbActive;
         spatialStatus.textContent = `Cyber Reverb: ${cyberReverbActive ? 'ON' : 'OFF'}`;
         spatial3dBtn.classList.toggle('border-pink-400', cyberReverbActive);
+        if (reverbWetNode) reverbWetNode.gain.value = cyberReverbActive ? 0.35 : 0;
     });
 
     visSpectrumBtn.addEventListener('click', () => {
@@ -597,8 +663,7 @@ function splitTextIntoChunks(text, maxChunkLen = 1200) {
     if (text.length <= maxChunkLen) return [text];
 
     const chunks = [];
-    const sentenceDelimiters = /(?<=[။\.\?\!\n])/g;
-    const sentences = text.split(sentenceDelimiters).filter(s => s && s.trim().length > 0);
+    const sentences = (text.match(/[^။.?!\n]*[။.?!\n]+|[^။.?!\n]+$/g) || [text]).filter(s => s && s.trim().length > 0);
 
     let currentChunk = "";
 
@@ -846,6 +911,22 @@ function initWebAudioGraph() {
 
         audioSource.connect(clarityFilterNode);
         clarityFilterNode.connect(analyser);
+
+        // Cyber Reverb: parallel wet send (convolver with a generated decaying-noise impulse).
+        // Dry path above stays untouched; the toggle only changes the wet gain.
+        const irLen = Math.floor(audioCtx.sampleRate * 1.6);
+        const ir = audioCtx.createBuffer(2, irLen, audioCtx.sampleRate);
+        for (let ch = 0; ch < 2; ch++) {
+            const d = ir.getChannelData(ch);
+            for (let i = 0; i < irLen; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / irLen, 2.5);
+        }
+        const convolver = audioCtx.createConvolver();
+        convolver.buffer = ir;
+        reverbWetNode = audioCtx.createGain();
+        reverbWetNode.gain.value = cyberReverbActive ? 0.35 : 0;
+        clarityFilterNode.connect(convolver);
+        convolver.connect(reverbWetNode);
+        reverbWetNode.connect(analyser);
         analyser.connect(audioCtx.destination);
     }
 }
@@ -2169,7 +2250,9 @@ sendToTtsBtn.addEventListener('click', () => {
         return;
     }
     const fullDialogue = lastTranslatedSubs
-        .map(s => (s.translatedText || '').replace(/\n/g, ' '))
+        .map(s => (s.translatedText || '').replace(/\n/g, ' ').trim())
+        .filter(Boolean)
+        .map(t => (targetLangSelect.value === 'Myanmar (Burmese)' && !/[။.!?]$/.test(t)) ? t + '။' : t)
         .join('\n');
     const dialogueOnly = fullDialogue.slice(0, 10000);
     const wasTruncated = fullDialogue.length > dialogueOnly.length;
@@ -2358,13 +2441,12 @@ function formatBytes(bytes) {
 // purpose is just to surface a plausible reason up front instead of a confusing silent
 // failure partway through (see review item on file-size guidance).
 function getMediaSizeWarning(bytes) {
+    // Both Transcribe and Recap now decode in the browser and send small 16kHz WAV chunks, so
+    // provider upload limits no longer apply — only the browser's decode memory does.
     const mb = bytes / (1024 * 1024);
-    const notes = [];
-    if (mb > 25) notes.push('Groq free-tier (25MB) fail နိုင်သည်');
-    if (mb > 100) notes.push('Groq dev-tier (100MB) ကိုပါ fail စေနိုင်သည်');
-    if (mb > 1000) notes.push('Gladia (1000MB) ကိုပါ fail စေနိုင်သည်');
-    if (mb > 2200) notes.push('AssemblyAI (2.2GB local-upload) ကိုပါ fail စေနိုင်သည်');
-    return notes.length ? ` ⚠ ${notes.join(' / ')}` : '';
+    if (mb > 1500) return ' ⚠ ဖိုင်ကြီးလွန်းသဖြင့် browser decode လုပ်ရာတွင် memory ပြည့်နိုင်သည်';
+    if (mb > 500) return ' ⚠ ဖိုင်ကြီးသဖြင့် decode ကြာနိုင်သည် (phone/tab memory သတိ)';
+    return '';
 }
 
 function setSelectedMediaFile(file) {
@@ -2688,6 +2770,10 @@ async function transcribeMediaWithRotation(file, language, maxRetries, timeoutSe
 async function transcribeChunkWithRotation(chunkFile, language, maxRetries, timeoutSec, onLog) {
     const pool = getTranscribeCredentialPool();
     if (pool.length === 0) throw new Error('Gladia/Groq/AssemblyAI API key မရှိပါ။');
+    const order = getProviderOrder();
+    if (order !== 'auto' && pool.some(c => c.provider === order)) {
+        return transcribeChunkOrdered(chunkFile, language, maxRetries, timeoutSec, onLog, pool, order);
+    }
 
     const totalAttempts = Math.min(pool.length * Math.max(maxRetries, 1), 15);
     let cred = nextTranscribeCredential();
@@ -2730,7 +2816,7 @@ function offsetProviderChunkResult(result, offsetSec, onLog) {
 // geminiTranscribeWithWorkers below — the only difference is each chunk is sent through
 // transcribeChunkWithRotation (Gladia/Groq/AssemblyAI pool) instead of straight to Gemini.
 async function transcribeMediaWithWorkers(audioBuffer, chunkSizeSec, workerCount, language, maxRetries, timeoutSec, onLog, useWaveformSync = true) {
-    const timeChunks = buildTimeChunks(audioBuffer.duration, chunkSizeSec);
+    const timeChunks = buildSmartTimeChunks(audioBuffer, chunkSizeSec, onLog);
     const results = new Array(timeChunks.length);
     const providerCounts = {};
 
@@ -2747,6 +2833,13 @@ async function transcribeMediaWithWorkers(audioBuffer, chunkSizeSec, workerCount
             const myIdx = cursor++;
             if (myIdx >= timeChunks.length) return;
             const { start, end } = timeChunks[myIdx];
+            if (timeChunks[myIdx].silent) {
+                results[myIdx] = [];
+                onLog(`Chunk ${myIdx + 1}/${timeChunks.length} (${formatTime(start)}–${formatTime(end)}) စကားမပါ — ကျော်လိုက်သည် (quota သက်သာ)`, 'ok');
+                done++;
+                updateTranscribeChunkProgress(done, timeChunks.length);
+                continue;
+            }
 
             setTranscribeWorkerStatus(workerId, 'busy', myIdx + 1, timeChunks.length);
             onLog(`Worker ${workerId + 1} → chunk ${myIdx + 1}/${timeChunks.length} (${formatTime(start)}–${formatTime(end)}) စတင်နေသည်...`);
@@ -2756,13 +2849,18 @@ async function transcribeMediaWithWorkers(audioBuffer, chunkSizeSec, workerCount
             // re-encode, re-send, rotating across the whole Gladia/Groq/AssemblyAI pool again)
             // until it succeeds or the user hits Stop, instead of skipping it after maxRetries.
             let chunkRound = 0;
-            while (true) {
+            let chunkFile;
+            try {
+                const sliceBuf = sliceAudioBuffer(audioBuffer, start, end);
+                const resampled = await resampleTo16kMono(sliceBuf);
+                chunkFile = new File([audioBufferToWavBlob(resampled)], `chunk_${myIdx + 1}.wav`, { type: 'audio/wav' });
+            } catch (e) {
+                onLog(`Chunk ${myIdx + 1} audio encode မအောင်မြင်ပါ: ${e.message}`, 'err');
+                chunkRound = MAX_CHUNK_ROUNDS;
+            }
+            while (chunkRound < MAX_CHUNK_ROUNDS) {
                 if (transcribeAborted) return;
                 try {
-                    const sliceBuf = sliceAudioBuffer(audioBuffer, start, end);
-                    const resampled = await resampleTo16kMono(sliceBuf);
-                    const wavBlob = audioBufferToWavBlob(resampled);
-                    const chunkFile = new File([wavBlob], `chunk_${myIdx + 1}.wav`, { type: 'audio/wav' });
                     if (transcribeAborted) return;
                     const result = await transcribeChunkWithRotation(chunkFile, language, maxRetries, timeoutSec, onLog);
                     results[myIdx] = offsetProviderChunkResult(result, start, onLog);
@@ -2774,9 +2872,14 @@ async function transcribeMediaWithWorkers(audioBuffer, chunkSizeSec, workerCount
                     if (transcribeAborted) return;
                     chunkRound++;
                     setTranscribeWorkerStatus(workerId, 'error', myIdx + 1, timeChunks.length);
-                    onLog(`Chunk ${myIdx + 1} error: ${e.message} — အောင်မြင်သည်အထိ ပြန်ကြိုးစားနေသည် (round ${chunkRound + 1})...`, 'err');
+                    onLog(`Chunk ${myIdx + 1} error: ${e.message} — ပြန်ကြိုးစားနေသည် (round ${chunkRound}/${MAX_CHUNK_ROUNDS})...`, 'err');
                     await sleep(retryBackoffMs(chunkRound));
                 }
+            }
+            if (!results[myIdx]) {
+                results[myIdx] = [];
+                setTranscribeWorkerStatus(workerId, 'error', myIdx + 1, timeChunks.length);
+                onLog(`Chunk ${myIdx + 1} (${formatTime(start)}–${formatTime(end)}) FAILED — ${MAX_CHUNK_ROUNDS} round ပြီးသည်အထိ မရပါ၊ SRT တွင် ဤအပိုင်း ကွက်လပ်ဖြစ်မည် (key/network စစ်ပြီး ထပ်လုပ်ပါ)`, 'err');
             }
 
             done++;
@@ -2791,6 +2894,7 @@ async function transcribeMediaWithWorkers(audioBuffer, chunkSizeSec, workerCount
 
     const mergedSubs = [];
     results.forEach(r => { if (r) mergedSubs.push(...r); });
+    validateMergedSubs(mergedSubs, audioBuffer.duration, onLog);
 
     let finalSubs = mergedSubs;
     if (useWaveformSync && mergedSubs.length > 0) {
@@ -3205,7 +3309,8 @@ function decodeMediaToAudioBuffer(file) {
     return file.arrayBuffer().then(arrayBuffer => {
         const AudioCtx = window.AudioContext || window.webkitAudioContext;
         if (!AudioCtx) throw new Error('ဤ browser တွင် Web Audio API မရှိပါ — AI TRANSCRIBE (GEMINI) ကို သုံး၍မရပါ');
-        const ctx = new AudioCtx();
+        let ctx;
+        try { ctx = new AudioCtx({ sampleRate: 16000 }); } catch (e) { ctx = new AudioCtx(); }
         return ctx.decodeAudioData(arrayBuffer)
             .then(audioBuffer => { ctx.close().catch(() => {}); return audioBuffer; })
             .catch(err => { ctx.close().catch(() => {}); throw new Error(`Media ဖိုင်ကို decode လုပ်ရာတွင် error တက်ပါသည် — codec မထောက်ပံ့ခြင်း ဖြစ်နိုင်ပါသည် (${err.message || err})`); });
@@ -3584,7 +3689,7 @@ function setTranscribeWorkerStatus(workerId, status, chunkNum, totalChunks) {
 
 // ---- Worker-pool driven multi-chunk direct transcription (mirrors translateSrtWithWorkers) ----
 async function geminiTranscribeWithWorkers(audioBuffer, chunkSizeSec, workerCount, languageHint, maxRetries, timeoutSec, onLog, useWaveformSync = true) {
-    const timeChunks = buildTimeChunks(audioBuffer.duration, chunkSizeSec);
+    const timeChunks = buildSmartTimeChunks(audioBuffer, chunkSizeSec, onLog);
     const results = new Array(timeChunks.length);
 
     renderTranscribeWorkerGrid(Math.max(1, Math.min(workerCount, timeChunks.length || 1)));
@@ -3600,6 +3705,13 @@ async function geminiTranscribeWithWorkers(audioBuffer, chunkSizeSec, workerCoun
             const myIdx = cursor++;
             if (myIdx >= timeChunks.length) return;
             const { start, end } = timeChunks[myIdx];
+            if (timeChunks[myIdx].silent) {
+                results[myIdx] = [];
+                onLog(`Chunk ${myIdx + 1}/${timeChunks.length} (${formatTime(start)}–${formatTime(end)}) စကားမပါ — ကျော်လိုက်သည် (quota သက်သာ)`, 'ok');
+                done++;
+                updateTranscribeChunkProgress(done, timeChunks.length);
+                continue;
+            }
 
             setTranscribeWorkerStatus(workerId, 'busy', myIdx + 1, timeChunks.length);
             onLog(`Worker ${workerId + 1} → chunk ${myIdx + 1}/${timeChunks.length} (${formatTime(start)}–${formatTime(end)}) စတင်နေသည်...`);
@@ -3609,13 +3721,18 @@ async function geminiTranscribeWithWorkers(audioBuffer, chunkSizeSec, workerCoun
             // re-encode, re-send) until it succeeds or the user hits Stop. This replaces the
             // old behaviour of skipping the chunk (leaving a gap in the SRT) after maxRetries.
             let chunkRound = 0;
-            while (true) {
+            let wavBase64;
+            try {
+                const sliceBuf = sliceAudioBuffer(audioBuffer, start, end);
+                const resampled = await resampleTo16kMono(sliceBuf);
+                wavBase64 = await blobToBase64(audioBufferToWavBlob(resampled));
+            } catch (e) {
+                onLog(`Chunk ${myIdx + 1} audio encode မအောင်မြင်ပါ: ${e.message}`, 'err');
+                chunkRound = MAX_CHUNK_ROUNDS;
+            }
+            while (chunkRound < MAX_CHUNK_ROUNDS) {
                 if (transcribeAborted) return;
                 try {
-                    const sliceBuf = sliceAudioBuffer(audioBuffer, start, end);
-                    const resampled = await resampleTo16kMono(sliceBuf);
-                    const wavBlob = audioBufferToWavBlob(resampled);
-                    const wavBase64 = await blobToBase64(wavBlob);
                     if (transcribeAborted) return;
                     const rawSrt = await callGeminiTranscribeChunk(wavBase64, myIdx, timeChunks.length, languageHint, maxRetries, timeoutSec, onLog);
                     results[myIdx] = rawSrt ? offsetSrtTimestamps(rawSrt, start, onLog) : [];
@@ -3626,9 +3743,14 @@ async function geminiTranscribeWithWorkers(audioBuffer, chunkSizeSec, workerCoun
                     if (transcribeAborted) return;
                     chunkRound++;
                     setTranscribeWorkerStatus(workerId, 'error', myIdx + 1, timeChunks.length);
-                    onLog(`Chunk ${myIdx + 1} error: ${e.message} — အောင်မြင်သည်အထိ ပြန်ကြိုးစားနေသည် (round ${chunkRound + 1})...`, 'err');
+                    onLog(`Chunk ${myIdx + 1} error: ${e.message} — ပြန်ကြိုးစားနေသည် (round ${chunkRound}/${MAX_CHUNK_ROUNDS})...`, 'err');
                     await sleep(retryBackoffMs(chunkRound));
                 }
+            }
+            if (!results[myIdx]) {
+                results[myIdx] = [];
+                setTranscribeWorkerStatus(workerId, 'error', myIdx + 1, timeChunks.length);
+                onLog(`Chunk ${myIdx + 1} (${formatTime(start)}–${formatTime(end)}) FAILED — ${MAX_CHUNK_ROUNDS} round ပြီးသည်အထိ မရပါ၊ SRT တွင် ဤအပိုင်း ကွက်လပ်ဖြစ်မည် (key/network စစ်ပြီး ထပ်လုပ်ပါ)`, 'err');
             }
 
             done++;
@@ -3643,6 +3765,7 @@ async function geminiTranscribeWithWorkers(audioBuffer, chunkSizeSec, workerCoun
 
     const mergedSubs = [];
     results.forEach(r => { if (r) mergedSubs.push(...r); });
+    validateMergedSubs(mergedSubs, audioBuffer.duration, onLog);
 
     let finalSubs = mergedSubs;
     if (useWaveformSync && mergedSubs.length > 0) {
@@ -3810,16 +3933,21 @@ async function handleFixTimestamps() {
     fixTimestampsBtn.disabled = true;
     fixTimestampsBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> FIXING...';
     transcribeStatusBadge.textContent = 'FIXING TIMESTAMPS';
+    stopTranscribeBtn.disabled = false;
     logTranscribe('AI TIMESTAMP FIX (Gemini) စတင်နေသည် — media ကို တိုက်ရိုက် ခွဲခြမ်းစိတ်ဖြာနေသည်...');
 
     try {
         const fixedSrt = await callGeminiFixTimestamps(selectedMediaFile, currentTranscribeResult.srt, maxRetries, timeoutSec, (msg, lvl) => logTranscribe(msg, lvl));
+        const prevCues = parseSrt(currentTranscribeResult.srt).length;
         currentTranscribeResult.srt = fixedSrt;
+        refreshTranscribeDerived(prevCues);
         renderTranscribeOutput();
         transcribeStatusBadge.textContent = 'DONE';
         logTranscribe('Timestamp ပြင်ဆင်မှု ပြီးဆုံးပါပြီ ✓', 'ok');
+        stopTranscribeBtn.disabled = true;
     } catch (err) {
         console.error('Timestamp Fix Error:', err);
+        stopTranscribeBtn.disabled = true;
         transcribeStatusBadge.textContent = 'FAILED';
         logTranscribe(`FAILED: ${err.message}`, 'err');
     } finally {
@@ -3941,16 +4069,20 @@ async function handleFormatSrt() {
     formatSrtBtn.disabled = true;
     formatSrtBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> FORMATTING...';
     transcribeStatusBadge.textContent = 'FORMATTING SRT';
+    stopTranscribeBtn.disabled = false;
     logTranscribe('AI SRT FORMAT (Gemini) စတင်နေသည် — fragment/duplicate/overlap များ ရှာဖွေနေသည်...');
 
     try {
         const formattedSrt = await callGeminiFormatSrt(currentTranscribeResult.srt, maxRetries, timeoutSec, (msg, lvl) => logTranscribe(msg, lvl));
         currentTranscribeResult.srt = formattedSrt;
+        refreshTranscribeDerived(0);
         renderTranscribeOutput();
         transcribeStatusBadge.textContent = 'DONE';
         logTranscribe('SRT ပြန်စီခြင်း ပြီးဆုံးပါပြီ ✓', 'ok');
+        stopTranscribeBtn.disabled = true;
     } catch (err) {
         console.error('SRT Format Error:', err);
+        stopTranscribeBtn.disabled = true;
         transcribeStatusBadge.textContent = 'FAILED';
         logTranscribe(`FAILED: ${err.message}`, 'err');
     } finally {
@@ -4407,7 +4539,7 @@ async function handleGenerateRecap() {
 
     try {
         // Step 1 — Transcribe (reuses the Transcribe tab's Gladia/Groq/AssemblyAI key pool + rotation)
-        const transcript = await transcribeMediaWithRotation(selectedRecapFile, language, maxRetries, timeoutSec, (msg, lvl) => logRecap(msg, lvl));
+        const transcript = await transcribeRecapChunked(selectedRecapFile, language, maxRetries, timeoutSec, (msg, lvl) => logRecap(msg, lvl));
         if (recapAborted || transcribeAborted) throw new Error('Stopped by user');
         if (!transcript.fullText || !transcript.fullText.trim()) throw new Error('Transcript ဗလာဖြစ်နေပါသည် — ဖိုင်ကို ပြန်စစ်ပါ');
         logRecap(`Transcription ပြီးဆုံးပါပြီ ✓ (${transcript.provider.toUpperCase()}, ${transcript.fullText.length} characters)`, 'ok');
@@ -4581,3 +4713,206 @@ window.addEventListener('DOMContentLoaded', () => {
     loadRecapModelsIntoInput();
     setActiveRecapFormatBtn('recap');
 });
+
+
+// Max whole-chunk retry rounds before a chunk is marked FAILED (instead of retrying forever and burning quota).
+const MAX_CHUNK_ROUNDS = 5;
+
+// After AI TIMESTAMP FIX / AI SRT FORMAT the SRT changes — keep TXT/JSON tabs in sync with it.
+function refreshTranscribeDerived(previousCueCount) {
+    if (!currentTranscribeResult) return;
+    const subs = parseSrt(currentTranscribeResult.srt);
+    currentTranscribeResult.fullText = subs.map(x => x.textLines.join(' ')).join('\n');
+    try {
+        const j = JSON.parse(currentTranscribeResult.jsonStr);
+        j.cues = subs.length;
+        j.note = String(j.note || '').replace(/ \(\+ AI post-process\)$/, '') + ' (+ AI post-process)';
+        currentTranscribeResult.jsonStr = JSON.stringify(j, null, 2);
+    } catch (e) { /* jsonStr wasn't JSON — leave it */ }
+    if (previousCueCount && subs.length !== previousCueCount) {
+        logTranscribe(`သတိပေးချက်: cue အရေအတွက် ${previousCueCount} → ${subs.length} ပြောင်းသွားသည်`, 'warn');
+    }
+}
+
+
+// B8 + B9: cut chunks at the quietest point near each target boundary (±5s, never mid-speech
+// if a pause exists), merge a too-short last chunk into the previous one, and flag chunks
+// containing no speech at all so workers skip them. Falls back to fixed-length chunks on error.
+function buildSmartTimeChunks(audioBuffer, chunkSizeSec, onLog) {
+    const total = audioBuffer.duration;
+    const fixed = buildTimeChunks(total, chunkSizeSec);
+    if (fixed.length <= 1) return fixed;
+    try {
+        const env = computeSpeechEnvelope(audioBuffer, null);
+        const hop = env.hopSec;
+        const win = Math.min(5, chunkSizeSec * 0.2);
+        const cuts = [0];
+        for (let t = chunkSizeSec; t < total - 5; t += chunkSizeSec) {
+            const target = Math.max(t, cuts[cuts.length - 1] + chunkSizeSec * 0.5);
+            let best = target, bestDist = Infinity;
+            for (let c = target - win; c <= target + win; c += hop) {
+                if (c <= cuts[cuts.length - 1] + 1 || c >= total - 1) continue;
+                if (!env.isSpeechAtFrame(env.frameAtTime(c)) && Math.abs(c - target) < bestDist) { best = c; bestDist = Math.abs(c - target); }
+            }
+            cuts.push(best);
+            t = best; // next target = best + chunkSizeSec (the loop adds chunkSizeSec)
+        }
+        cuts.push(total);
+        const chunks = [];
+        for (let i = 0; i < cuts.length - 1; i++) chunks.push({ start: cuts[i], end: cuts[i + 1] });
+        if (chunks.length > 1 && chunks[chunks.length - 1].end - chunks[chunks.length - 1].start < 5) {
+            const last = chunks.pop();
+            chunks[chunks.length - 1].end = last.end;
+        }
+        let anySpeech = false;
+        chunks.forEach(c => {
+            const f0 = env.frameAtTime(c.start), f1 = env.frameAtTime(c.end);
+            c.hasSpeech = false;
+            for (let f = f0; f <= f1; f++) if (env.isSpeechAtFrame(f)) { c.hasSpeech = true; break; }
+            if (c.hasSpeech) anySpeech = true;
+        });
+        // If the detector found no speech anywhere (very quiet file), don't skip anything.
+        if (anySpeech) chunks.forEach(c => { c.silent = !c.hasSpeech; });
+        return chunks;
+    } catch (e) {
+        if (onLog) onLog(`Smart chunking မရပါ (${e.message}) — အချိန်အတိုင်း ဖြတ်မည်`, 'warn');
+        return fixed;
+    }
+}
+
+
+// B10: sanity-check merged chunk output — sort by start time, drop cues that start past the
+// end of the media or have no positive length, clamp ends to the media duration, and drop
+// loop-hallucination runs (same text 3+ times in a row — only the first is kept).
+// Mutates the array in place.
+function validateMergedSubs(subs, durationSec, onLog) {
+    const toMs = (s) => {
+        const p = String(s.timeLine).split('-->').map(x => x.trim());
+        return p.length === 2 ? [parseSrtTimestampToMs(p[0]), parseSrtTimestampToMs(p[1])] : [null, null];
+    };
+    const maxMs = Math.round((durationSec + 1) * 1000);
+    let outOfRange = 0, invalid = 0, repeats = 0;
+    const rows = [];
+    subs.forEach(s => {
+        const [a, b] = toMs(s);
+        if (a === null || b === null || b <= a) { invalid++; return; }
+        if (a > maxMs) { outOfRange++; return; }
+        rows.push({ s, a, b: Math.min(b, maxMs) });
+    });
+    rows.sort((x, y) => x.a - y.a);
+    const kept = [];
+    let run = 0, lastText = null;
+    rows.forEach(r => {
+        const text = r.s.textLines.join(' ').trim().toLowerCase();
+        run = (text && text === lastText) ? run + 1 : 1;
+        lastText = text;
+        if (run >= 3) { repeats++; return; }
+        r.s.timeLine = `${formatSrtTimestamp(r.a / 1000)} --> ${formatSrtTimestamp(r.b / 1000)}`;
+        kept.push(r.s);
+    });
+    const dropped = invalid + outOfRange + repeats;
+    if (dropped > 0 && onLog) {
+        onLog(`Output စစ်ဆေးမှု: cue ${dropped} ခု ဖယ်လိုက်သည် (timestamp မမှန် ${invalid}, media အရှည်ကျော် ${outOfRange}, ထပ်ခါထပ်ခါ ${repeats})`, 'warn');
+    }
+    subs.splice(0, subs.length, ...kept);
+}
+
+// B11: WAVEFORM FIX — no API call. Decodes the selected media locally and snaps every cue of the
+// current SRT onto real speech onset/offset (same pass WAVEFORM SYNC runs after transcribing).
+async function handleWaveformFix() {
+    if (!currentTranscribeResult || !currentTranscribeResult.srt) {
+        logTranscribe('WAVEFORM FIX: SRT မရှိသေးပါ — အရင် transcribe လုပ်ပါ (သို့) SRT ထည့်ပါ', 'warn');
+        return;
+    }
+    if (!selectedMediaFile) {
+        logTranscribe('WAVEFORM FIX: media ဖိုင် ရွေးထားရန် လိုပါသည်', 'warn');
+        return;
+    }
+    if (isTranscribing) { logTranscribe('အခြား transcribe/AI အလုပ်တစ်ခု လုပ်နေဆဲ ဖြစ်ပါသည် — ပြီးမှ ထပ်နှိပ်ပါ', 'warn'); return; }
+    isTranscribing = true;
+    waveformFixBtn.disabled = true;
+    waveformFixBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> SYNCING...';
+    try {
+        logTranscribe('WAVEFORM FIX: media ကို decode လုပ်နေသည်...');
+        const audioBuffer = await decodeMediaToAudioBuffer(selectedMediaFile);
+        const envelope = computeSpeechEnvelope(audioBuffer, (m, l) => logTranscribe(m, l));
+        const subs = parseSrt(currentTranscribeResult.srt);
+        const refined = refineCueTimingsWithEnvelope(subs, envelope, (m, l) => logTranscribe(m, l));
+        currentTranscribeResult.srt = rebuildSrt(refined);
+        refreshTranscribeDerived(subs.length);
+        renderTranscribeOutput();
+        logTranscribe('WAVEFORM FIX ပြီးဆုံးပါပြီ ✓ (API မသုံးပါ)', 'ok');
+    } catch (err) {
+        logTranscribe(`WAVEFORM FIX FAILED: ${err.message}`, 'err');
+    } finally {
+        isTranscribing = false;
+        waveformFixBtn.disabled = false;
+        waveformFixBtn.innerHTML = '<i class="fa-solid fa-wave-square"></i> WAVEFORM FIX';
+    }
+}
+const waveformFixBtn = document.getElementById('waveformFixBtn');
+if (waveformFixBtn) waveformFixBtn.addEventListener('click', handleWaveformFix);
+
+
+// B15: Recap's transcription step now uses the same chunked pipeline as the Transcribe tab
+// (browser decode -> small 16kHz WAV chunks -> worker pool across the Gladia/Groq/AssemblyAI
+// keys), so a big file no longer hits per-provider upload limits (e.g. Groq 25MB).
+// Chunk Size / Workers are read from the Transcribe tab's controls. If the browser can't
+// decode the file (unsupported codec), it falls back to the old whole-file path.
+async function transcribeRecapChunked(file, language, maxRetries, timeoutSec, onLog) {
+    let audioBuffer;
+    try {
+        onLog('Media ကို browser ထဲမှာ decode လုပ်နေသည် (chunked transcription)...');
+        audioBuffer = await decodeMediaToAudioBuffer(file);
+    } catch (e) {
+        onLog(`Decode မရပါ (${e.message}) — ဖိုင်တစ်ခုလုံးကို provider ဆီ တိုက်ရိုက်ပို့ပါမည်`, 'warn');
+        return transcribeMediaWithRotation(file, language, maxRetries, timeoutSec, onLog);
+    }
+    const chunkSizeSec = Math.max(parseInt(transcribeChunkSizeInput.value, 10) || 60, 15);
+    const workerCount = Math.max(parseInt(transcribeWorkerCountInput.value, 10) || 3, 1);
+    const { srt, providerCounts } = await transcribeMediaWithWorkers(audioBuffer, chunkSizeSec, workerCount, language, maxRetries, timeoutSec, onLog, false);
+    const subs = srt ? parseSrt(srt) : [];
+    const provider = Object.entries(providerCounts).map(([p, c]) => `${p}:${c}`).join(' ') || 'n/a';
+    return { fullText: subs.map(x => x.textLines.join(' ')).join('\n'), provider };
+}
+
+
+// B12: Provider Order. 'auto' keeps the round-robin pool above. Choosing a provider makes it the
+// PRIMARY for every chunk (its keys still rotate between chunks) and only falls back to the other
+// providers' keys when every primary key has failed for that chunk — so a transcript is
+// segmented by one engine instead of a Gladia/Groq/AssemblyAI mix.
+const LS_TRANSCRIBE_PROVIDER_ORDER = 'neoyangon_transcribe_provider_order';
+let primaryKeyCounter = 0;
+function getProviderOrder() { return safeLsGet(LS_TRANSCRIBE_PROVIDER_ORDER) || 'auto'; }
+
+async function transcribeChunkOrdered(chunkFile, language, maxRetries, timeoutSec, onLog, pool, order) {
+    const primary = pool.filter(c => c.provider === order);
+    const fallback = pool.filter(c => c.provider !== order);
+    const start = primaryKeyCounter++ % primary.length;
+    const sequence = primary.slice(start).concat(primary.slice(0, start), fallback);
+    const rounds = Math.max(maxRetries, 1);
+    const totalAttempts = Math.min(sequence.length * rounds, 15);
+    let lastErr;
+    for (let attempt = 0; attempt < totalAttempts; attempt++) {
+        if (transcribeAborted) throw new Error('Stopped by user');
+        const cred = sequence[attempt % sequence.length];
+        const tag = cred.provider === order ? 'PRIMARY' : 'FALLBACK';
+        onLog(`[${cred.provider.toUpperCase()} ${tag}] chunk attempt ${attempt + 1}/${totalAttempts}...`);
+        try {
+            const result = await callProviderTranscribe(cred, chunkFile, language, timeoutSec, onLog);
+            return { ...result, provider: cred.provider };
+        } catch (e) {
+            lastErr = e;
+            onLog(`[${cred.provider.toUpperCase()}] chunk error: ${e.message}`, 'err');
+            if (transcribeAborted) throw new Error('Stopped by user');
+            await sleep(retryBackoffMs(attempt));
+        }
+    }
+    throw lastErr || new Error('Providers အားလုံး failed ဖြစ်သွားပါသည် (chunk)');
+}
+
+const transcribeProviderOrderSelect = document.getElementById('transcribeProviderOrder');
+if (transcribeProviderOrderSelect) {
+    transcribeProviderOrderSelect.addEventListener('change', () => safeLsSet(LS_TRANSCRIBE_PROVIDER_ORDER, transcribeProviderOrderSelect.value));
+    window.addEventListener('DOMContentLoaded', () => { transcribeProviderOrderSelect.value = getProviderOrder(); });
+}
