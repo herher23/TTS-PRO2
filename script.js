@@ -1326,15 +1326,18 @@ if (contextMemoryEnabledChk) {
 const LS_CUSTOM_PROMPT = 'neoyangon_custom_prompt';
 const LS_CUSTOM_PROMPT_ENABLED = 'neoyangon_custom_prompt_enabled';
 const LS_PROOFREAD_ENABLED = 'neoyangon_proofread_enabled';
+const LS_PROOFREAD_NATURAL = 'neoyangon_proofread_natural';
 const customPromptBox = document.getElementById('customPromptBox');
 const customPromptEnabledChk = document.getElementById('customPromptEnabledChk');
 const autoExtractBtn = document.getElementById('autoExtractBtn');
 const proofreadPassChk = document.getElementById('proofreadPassChk');
+const proofreadNaturalChk = document.getElementById('proofreadNaturalChk');
 const customPromptStatus = document.getElementById('customPromptStatus');
 
 function getCustomPrompt() { return safeLsGet(LS_CUSTOM_PROMPT) || ''; }
 function isCustomPromptEnabled() { return safeLsGet(LS_CUSTOM_PROMPT_ENABLED) !== 'false'; }
 function isProofreadEnabled() { return safeLsGet(LS_PROOFREAD_ENABLED) === 'true'; }
+function isNaturalPolishEnabled() { return safeLsGet(LS_PROOFREAD_NATURAL) !== 'false'; } // default ON
 function setCustomPromptStatus(msg, ms = 4000) {
     if (!customPromptStatus) return;
     customPromptStatus.textContent = msg;
@@ -1344,12 +1347,15 @@ function setCustomPromptStatus(msg, ms = 4000) {
 if (customPromptBox) customPromptBox.addEventListener('input', () => safeLsSet(LS_CUSTOM_PROMPT, customPromptBox.value));
 if (customPromptEnabledChk) customPromptEnabledChk.addEventListener('change', () =>
     safeLsSet(LS_CUSTOM_PROMPT_ENABLED, customPromptEnabledChk.checked ? 'true' : 'false'));
+if (proofreadNaturalChk) proofreadNaturalChk.addEventListener('change', () =>
+    safeLsSet(LS_PROOFREAD_NATURAL, proofreadNaturalChk.checked ? 'true' : 'false'));
 if (proofreadPassChk) proofreadPassChk.addEventListener('change', () =>
     safeLsSet(LS_PROOFREAD_ENABLED, proofreadPassChk.checked ? 'true' : 'false'));
 window.addEventListener('DOMContentLoaded', () => {
     if (customPromptBox) customPromptBox.value = getCustomPrompt();
     if (customPromptEnabledChk) customPromptEnabledChk.checked = isCustomPromptEnabled();
     if (proofreadPassChk) proofreadPassChk.checked = isProofreadEnabled();
+    if (proofreadNaturalChk) proofreadNaturalChk.checked = isNaturalPolishEnabled();
 });
 
 // One JSON-returning Gemini call on the translator's key/model rotation.
@@ -1462,6 +1468,14 @@ async function proofreadTranslatedSubs(subs, targetLang, timeoutSec) {
     const custom = (isCustomPromptEnabled() ? getCustomPrompt() : '').trim();
     const contextMemory = (isContextMemoryEnabled() ? getContextMemory() : '').trim();
     const glossNames = getGlossary().filter(g => g.term).map(g => `${g.term} = ${g.replacement}`).join('; ');
+    const strongNatural = isMyanmar && isNaturalPolishEnabled();
+    const fixRules = strongNatural
+        ? `Your main job: make every line read like natural spoken Burmese from a drama / anime subtitle, while keeping the meaning EXACTLY the same as the source.
+REWRITE a line whenever it (1) is a word-for-word / literal translation, (2) stacks two intensifiers for one "very" (e.g. "တကယ့်ကို အလွန်အမင်း" — keep ONE: အတော်လေး / တော်တော် / အရမ်း), (3) ends with formal written forms (သည်၊ ၏) instead of spoken ones (တယ်၊ ပြီ၊ ပါပဲ), (4) contains words that are not in the source, (5) uses a word whose feeling does not fit the scene, or (6) is awkward or hard to read at a glance.
+Also fix wrong meaning, inconsistent character names / gender / pronouns and spelling mistakes.
+Never change the meaning and never add or drop information. If a line already reads naturally, return it EXACTLY unchanged. Keep lines short and keep any line break as is.`
+        : `Fix ONLY: wrong meaning, inconsistent character names / gender / pronouns, spelling mistakes, unnatural or broken phrasing.
+If an item is already good, return it EXACTLY unchanged. Keep the same length style (short subtitle lines) and keep any line break as is.`;
     const schema = { type: "ARRAY", items: { type: "STRING" } };
     const targets = subs.filter(x => !x.translationFailed && x.translatedText && String(x.translatedText).trim());
     const chunks = chunkArray(targets, 40);
@@ -1480,8 +1494,7 @@ async function proofreadTranslatedSubs(subs, targetLang, timeoutSec) {
             : '';
         const prompt = `You are a careful proofreader for ${targetLang} subtitles.
 For each item, compare "translation" with "source" and return the corrected translation.
-Fix ONLY: wrong meaning, inconsistent character names / gender / pronouns, spelling mistakes, unnatural or broken phrasing.
-If an item is already good, return it EXACTLY unchanged. Keep the same length style (short subtitle lines) and keep any line break as is.
+${fixRules}
 Return a JSON array of strings with exactly ${items.length} items in the same order. No notes.${isMyanmar ? '\nNever use the marks "။" "၊" "!" "?".' : ''}
 ${glossNames ? `Glossary (keep these forms): ${glossNames}\n` : ''}${contextMemory ? `Global context from the user (story / tone / characters — keep the translation consistent with it):\n${contextMemory}\n` : ''}${custom ? `User instructions:\n${custom}\n` : ''}${neighbourBlock}
 Items:
@@ -1532,7 +1545,12 @@ function buildTranslationPrompt(lines, targetLang, context) {
 - Language precision: translate the meaning accurately for ${targetLang}, based on the actual context of the source line (not a literal word-for-word conversion).
 - Strict punctuation restriction: NEVER use the Myanmar sentence-punctuation marks "။" or "၊" anywhere in the output.
 - Also NEVER use the Western exclamation mark "!" or question mark "?" anywhere in the output.
-- Write clean subtitle-style Burmese sentences without any of the punctuation marks listed above.` : '';
+- Write clean subtitle-style Burmese sentences without any of the punctuation marks listed above.
+- Natural spoken Burmese: write the way a native Burmese subtitler would for a drama / anime, so it reads smoothly at a glance. Re-express the idea in the way Burmese speakers actually say it instead of converting each English word one by one (avoid literal calques).
+- Use spoken endings (တယ်၊ ပြီ၊ နေပြီ၊ ပါပဲ) rather than formal written endings (သည်၊ ၏). Keep lines short.
+- Use ONE intensifier per phrase at most (အတော်လေး / တော်တော် / အရမ်း). NEVER stack two intensifiers for a single "very" (for example do not write "တကယ့်ကို အလွန်အမင်း").
+- Do not add new information or extra words that are not implied by the source line (for example do not invent "reach the stage of"). Natural phrasing is good, but the meaning must stay exactly the same.
+- Pick words whose feeling matches the scene, and keep the story's own meaning for ambiguous words (use the surrounding lines and the user's context to decide).` : '';
 
     return `You are a professional subtitle translator localizing a video subtitle file into ${targetLang}.
 

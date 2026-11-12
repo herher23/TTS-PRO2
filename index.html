@@ -67,7 +67,7 @@
                 </div>
                 <div>
                     <h1 class="font-orbitron font-extrabold text-2xl sm:text-3xl text-white tracking-wider flex items-center gap-2">
-                        NAYPYIDAW <span class="text-transparent bg-clip-text bg-gradient-to-r from-[var(--neon-cyan)] via-purple-400 to-[var(--neon-pink)] text-glow-cyan">2026</span>
+                        NEO-YANGON <span class="text-transparent bg-clip-text bg-gradient-to-r from-[var(--neon-cyan)] via-purple-400 to-[var(--neon-pink)] text-glow-cyan">2026</span>
                     </h1>
                     <p class="font-mono text-xs sm:text-sm text-cyan-300/80 tracking-[0.25em] uppercase flex items-center gap-2">
                         <span class="inline-block w-2 h-2 rounded-full bg-emerald-400 animate-ping"></span>
@@ -312,7 +312,7 @@
 
                     <div class="grid grid-cols-2 gap-3 pt-2">
                         <button id="clarityBoostBtn" class="px-3 py-2 rounded bg-cyan-950/60 hover:bg-cyan-900 border border-cyan-500/40 text-cyan-300 font-mono text-xs flex items-center justify-center gap-2 transition-all">
-                            <i class="fa-solid fa-sparkles text-yellow-400"></i>
+                            <i class="fa-solid fa-wand-magic-sparkles text-yellow-400"></i>
                             <span id="clarityStatus">Clarity Boost: ON</span>
                         </button>
                         <button id="spatial3dBtn" class="px-3 py-2 rounded bg-purple-950/60 hover:bg-purple-900 border border-purple-500/40 text-purple-300 font-mono text-xs flex items-center justify-center gap-2 transition-all">
@@ -488,23 +488,6 @@
                 </div>
 
                 <div id="transGlossaryList" class="space-y-1 max-h-40 overflow-y-auto font-burmese text-xs"></div>
-
-                <div class="flex flex-wrap gap-x-5 gap-y-2 mt-3 font-mono text-[10px] text-cyan-300">
-                    <label class="flex items-center gap-2"><input type="checkbox" id="glossaryWholeWordChk" checked class="accent-cyan-400"> WHOLE WORD (English စာလုံးတစ်လုံးလုံး ကိုက်မှ အစားထိုး)</label>
-                    <label class="flex items-center gap-2"><input type="checkbox" id="glossaryCaseChk" checked class="accent-cyan-400"> CASE-SENSITIVE (အကြီး/အသေး ခွဲ)</label>
-                </div>
-                <p class="font-mono text-[10px] text-cyan-500/50 mt-1">ဒီ ၂ ခုက TTS tab ရဲ့ Glossary မှာလည်း အတူတူ သက်ရောက်ပါသည်။</p>
-
-                <details class="mt-3">
-                    <summary class="cursor-pointer font-mono text-[10px] text-yellow-300">BULK ADD — တစ်ကြောင်းစီ "မူရင်း = အစားထိုး"</summary>
-                    <textarea id="glossaryBulkInput" rows="4"
-                        class="w-full mt-2 p-2 rounded bg-black/60 border border-yellow-500/30 text-yellow-100 placeholder-yellow-800/60 font-burmese text-xs focus:outline-none focus:border-cyan-500/80 resize-y"
-                        placeholder="yess = ဟုတ်တယ်&#10;Kai = ကိုင်"></textarea>
-                    <div class="flex items-center gap-3 mt-2">
-                        <button id="glossaryBulkAddBtn" class="px-3 py-1.5 rounded bg-yellow-600 hover:bg-yellow-500 text-black font-mono text-xs font-bold"><i class="fa-solid fa-plus mr-1"></i> ADD ALL</button>
-                        <span id="glossaryBulkMsg" class="font-mono text-xs text-emerald-400"></span>
-                    </div>
-                </details>
             </div>
 
             <!-- Global Context Memory Panel (free-text instructions injected into the translation prompt) -->
@@ -535,22 +518,6 @@
                 </div>
             </div>
 
-            <!-- Backup / Import -->
-            <div class="holo-glass holo-corner p-4 sm:p-5 rounded-xl border-emerald-500/30">
-                <div class="flex items-center gap-2 mb-3">
-                    <i class="fa-solid fa-box-archive text-emerald-400 text-sm"></i>
-                    <h3 class="font-orbitron font-semibold text-xs tracking-widest text-emerald-300 uppercase">Backup / Import</h3>
-                </div>
-                <p class="font-mono text-[10px] text-cyan-500/60 mb-3">Glossary၊ Custom Prompt (Auto notes ပါ)၊ Context Memory နှင့် ON/OFF setting များကို JSON ဖိုင်အဖြစ် သိမ်း / ပြန်ထည့်နိုင်ပါသည်။ API key မပါဝင်ပါ။ Browser data ဖျက်မိရင် ပျောက်မည်ကို ကာကွယ်ရန်ပါ။</p>
-                <div class="flex flex-wrap items-center gap-3">
-                    <button id="exportBackupBtn" class="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-black font-mono text-xs font-bold"><i class="fa-solid fa-download mr-1"></i> EXPORT</button>
-                    <button id="importBackupBtn" class="px-3 py-1.5 rounded-lg bg-black/50 border border-emerald-500/40 text-emerald-300 font-mono text-xs hover:border-emerald-300"><i class="fa-solid fa-upload mr-1"></i> IMPORT</button>
-                    <input type="file" id="importBackupFile" accept=".json,application/json" class="hidden">
-                    <label class="flex items-center gap-2 font-mono text-[10px] text-cyan-300"><input type="checkbox" id="backupReplaceChk" class="accent-cyan-400"> Glossary ကို အစားထိုး (မတပ်ရင် ပေါင်းထည့်)</label>
-                    <span id="backupStatusMsg" class="font-mono text-xs text-emerald-400"></span>
-                </div>
-            </div>
-
             <!-- Custom Prompt Box + Auto-extract + Proofread -->
             <div class="holo-glass holo-corner p-4 sm:p-5 rounded-xl border-purple-500/30">
                 <div class="flex items-center justify-between mb-3">
@@ -570,14 +537,11 @@
                     <button id="autoExtractBtn" class="px-3 py-1.5 rounded-lg bg-purple-600 hover:bg-purple-500 text-white font-mono text-xs font-bold">
                         <i class="fa-solid fa-user-tag mr-1"></i> AUTO-EXTRACT (ဇာတ်ကောင် / ကျား-မ / နာမ်စား)
                     </button>
-                    <button id="autoExtractStopBtn" disabled class="px-3 py-1.5 rounded-lg bg-black/40 hover:bg-yellow-950/50 border border-yellow-500/40 text-yellow-300 font-mono text-xs font-bold disabled:opacity-40">
-                        <i class="fa-solid fa-stop mr-1"></i> STOP
-                    </button>
-                    <button id="clearCustomPromptBtn" class="px-3 py-1.5 rounded-lg bg-black/40 hover:bg-red-950/50 border border-red-500/40 text-red-300 font-mono text-xs font-bold">
-                        <i class="fa-solid fa-trash-can mr-1"></i><span>CLEAR</span>
-                    </button>
                     <label class="flex items-center gap-2 font-mono text-[10px] text-cyan-300">
                         <input type="checkbox" id="proofreadPassChk" class="accent-cyan-400"> PROOFREAD PASS (ဘာသာပြန်ပြီးရင် တစ်ခါ ပြန်စစ်)
+                    </label>
+                    <label class="flex items-center gap-2 font-mono text-[10px] text-pink-300" title="မြန်မာဘာသာပြန်ကို စကားပြောပုံစံ သဘာဝကျအောင် ပြန်ရေးပါမည် (အဓိပ္ပာယ် မပြောင်းပါ)">
+                        <input type="checkbox" id="proofreadNaturalChk" checked class="accent-pink-400"> NATURAL POLISH (သဘာဝကျအောင် ပြန်ရေး — ပြင်း)
                     </label>
                     <span id="customPromptStatus" class="font-mono text-xs text-emerald-400"></span>
                 </div>
@@ -614,10 +578,6 @@
                         <option value="Korean">한국어 (Korean)</option>
                     </select>
                 </div>
-                <label class="flex items-center gap-2 mb-4 font-mono text-[10px] text-cyan-300">
-                    <input type="checkbox" id="resumeSessionChk" checked class="accent-cyan-400">
-                    RESUME — ယခင်ပြီးပြီးသား cue များကို ကျော်ပြီး ကျန်တာကိုသာ ဘာသာပြန် (chunk တစ်ခုပြီးတိုင်း auto သိမ်းသည်)
-                </label>
                 <div class="flex flex-wrap gap-3 justify-center">
                     <button id="clearSrtBtn" class="px-4 py-3 rounded-lg bg-black/40 hover:bg-red-950/50 border border-red-500/30 text-red-300 font-mono text-sm tracking-wider flex items-center justify-center gap-2 transition-all hover:border-red-400">
                         <i class="fa-solid fa-trash-can"></i><span>CLEAR</span>
@@ -677,9 +637,9 @@
                     <span class="font-mono text-xs text-cyan-500/60">.srt</span>
                 </div>
 
-                <textarea id="srtOutput" 
+                <textarea id="srtOutput" readonly
                     class="w-full flex-grow min-h-[320px] p-4 rounded-lg bg-black/60 border border-cyan-500/30 text-cyan-100 placeholder-cyan-700/60 font-mono text-xs leading-relaxed focus:outline-none resize-y"
-                    placeholder="ဘာသာပြန်ထားသော SRT ဤနေရာတွင် ထွက်ပေါ်လာမည် (တိုက်ရိုက် edit လုပ်နိုင်ပါသည်)..."></textarea>
+                    placeholder="ဘာသာပြန်ထားသော SRT ဤနေရာတွင် ထွက်ပေါ်လာမည်..."></textarea>
 
                 <div id="srtOutputMeta" class="mt-2 font-mono text-[10px] text-cyan-500/60"></div>
 
@@ -853,6 +813,16 @@
                         <input type="number" id="transcribeWorkerCount" value="3" min="1" max="6" class="w-full p-2 rounded bg-black/60 border border-purple-500/30 text-purple-100 font-mono text-xs focus:outline-none focus:border-pink-500/80">
                     </div>
                 </div>
+                <div class="mb-4">
+                    <label class="block font-mono text-[10px] text-purple-300 uppercase tracking-widest mb-1.5">Provider Order <span class="text-purple-500/60 normal-case">— primary + fallback</span></label>
+                    <select id="transcribeProviderOrder" class="w-full p-2 rounded bg-black/60 border border-purple-500/30 text-purple-100 font-mono text-xs focus:outline-none focus:border-pink-500/80">
+                        <option value="auto" selected>AUTO — providers အားလုံး လှည့်သုံး (round-robin)</option>
+                        <option value="gladia">Gladia ကို အဓိက၊ မရမှ ကျန်တာ (fallback)</option>
+                        <option value="groq">Groq ကို အဓိက၊ မရမှ ကျန်တာ (fallback)</option>
+                        <option value="assemblyai">AssemblyAI ကို အဓိက၊ မရမှ ကျန်တာ (fallback)</option>
+                    </select>
+                    <p class="font-mono text-[10px] text-purple-500/60 mt-1">Chunk တိုင်းကို provider တစ်ခုတည်းနဲ့ လုပ်ရင် segmentation/accuracy တူညီပါမည်။</p>
+                </div>
                 <div class="flex items-start gap-2.5 mb-4 px-1 py-2 rounded-lg bg-black/30 border border-cyan-500/20">
                     <input type="checkbox" id="transcribeWaveformSyncToggle" checked
                         class="mt-0.5 w-4 h-4 rounded accent-cyan-500 cursor-pointer flex-shrink-0">
@@ -925,6 +895,9 @@
                 <div class="flex justify-end gap-2 mb-3 flex-wrap">
                     <button id="formatSrtBtn" class="px-3 py-1.5 rounded-lg bg-gradient-to-r from-emerald-600 to-cyan-600 hover:from-emerald-500 hover:to-cyan-500 text-white font-mono text-xs font-bold transition-all flex items-center gap-1" title="Gemini ဖြင့် fragment/duplicate/overlap များ ဖယ်ရှားပြီး သဘာဝကျသော SRT ပြန်စီပါမည်">
                         <i class="fa-solid fa-list-check"></i> AI SRT FORMAT
+                    </button>
+                    <button id="waveformFixBtn" class="px-3 py-1.5 rounded-lg bg-gradient-to-r from-cyan-600 to-blue-600 hover:from-cyan-500 hover:to-blue-500 text-white font-mono text-xs font-bold transition-all flex items-center gap-1" title="API မသုံးဘဲ audio waveform ကိုက Timestamp ကို ပြန်ချိန်ညှိပါမည် (မြန်ပြီး အခမဲ့)">
+                        <i class="fa-solid fa-wave-square"></i> WAVEFORM FIX
                     </button>
                     <button id="fixTimestampsBtn" class="px-3 py-1.5 rounded-lg bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-500 hover:to-pink-500 text-white font-mono text-xs font-bold transition-all flex items-center gap-1" title="Gemini ဖြင့် media ကို တိုက်ရိုက်ခွဲခြမ်းပြီး Timestamp ကို ပြန်ချိန်ညှိပါမည်">
                         <i class="fa-solid fa-wand-magic-sparkles"></i> AI TIMESTAMP FIX
