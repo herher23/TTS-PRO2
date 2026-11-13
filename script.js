@@ -2580,6 +2580,386 @@ function segmentsToSrt(segments) {
     ).join('\n\n') + '\n';
 }
 
+// ---- B16 START ----
+// Traditional → Simplified single-character table (generated from ICU Hant-Hans; 著 left out on purpose,
+// 乾 is special-cased in toSimplifiedChinese so 乾坤 stays 乾坤).
+const T2S_SRC =
+    '丟並乾亂亙亞佇佈佔併來侖侶侷俁係俔俠俬俱倀倆倈倉個們倖倣倫偉側偵偽傑傖傘備傢傭傯傳傴債傷傾僂僅僇僉僑僕僞僥僨僱價儀儂億儈儉儐儔儕儘償優儲儷儸儺儻儼兇兌兒兗內兩冊冪凈凍凜凱別刪剄則剋剎剗剛剝剮剴創剷劃劇' +
+    '劉劊劌劍劏劑劚勁動勗務勛勝勞勢勩勱勳勵勸勻匭匯匱區協卹卻厙厠厭厲厴參叄叢吒吢吳吶呂咷咼員唄唚唸問啓啞啟啢喎喚喨喪喫喬單喲嗆嗇嗊嗎嗚嗩嗶嘆嘍嘔嘖嘗嘜嘩嘮嘯嘰嘵嘸嘽噓噚噝噠噥噦噯噲噴噸噹嚀嚇嚌嚐嚕嚙嚥嚦嚨' +
+    '嚮嚲嚳嚴嚶囀囁囂囅囈囉囍囑囓囪圇國圍園圓圖團垵埡埰執堅堊堖堝堯報場塊塋塏塒塗塚塢塤塵塹墊墜墮墳墻墾壇壋壎壓壘壙壚壜壞壟壠壢壩壯壺壼壽夠夢夥夾奐奧奩奪奬奮奼妝姊姍姦姪娛婁婦婭媧媯媼媽嫋嫗嫵嫻嫿嬀嬈嬋嬌嬙' +
+    '嬝嬡嬤嬪嬰嬸孃孌孫學孿宮寢實寧審寫寬寵寶尅將專尋對導尷屆屍屓屜屢層屨屬岡峴島峽崍崑崗崙崢崬嵐嶁嶄嶇嶔嶗嶠嶢嶧嶮嶴嶸嶺嶼巋巒巔巖巰帥師帳帶幀幃幗幘幟幣幫幬幹幾庫廁廂廄廈廚廝廟廠廡廢廣廩廬廳廻弒弔弳張強彆' +
+    '彈彌彎彙彞彥彿後徑從徠復徬徵徹恆恥悅悞悳悵悶悽惡惱惲惻愛愜愨愴愷愾慄慇態慍慘慚慟慣慤慪慫慮慳慶慼慾憂憊憐憑憒憚憤憫憮憲憶懃懇應懌懍懞懟懣懨懮懲懶懷懸懺懼懾戀戇戔戧戩戰戱戲戶拋挩挾捨捫捲掃掄掗掙掛採揀揚' +
+    '換揮搆損搖搗搥搧搨搵搶搾摀摑摜摟摯摳摶摺摻撈撏撐撓撚撝撟撢撣撥撫撲撳撻撾撿擁擄擇擊擋擓擔據擠擣擬擯擰擱擲擴擷擺擻擼擾攄攆攏攔攖攙攛攜攝攢攣攤攪攬敗敘敵數斂斃斕斬斷於昇時晉晝暈暉暘暢暫暱曄曆曇曉曏曖曠曨' +
+    '曬書會朧東枒柵桿梔梘條梟梲棄棖棗棟棧棲棶椏楊楓楨業極榖榪榮榲榿構槍槓槖槤槧槨槳樁樂樅樑樓標樞樣樸樹樺橈橋機橢橫檁檉檔檜檝檟檢檣檮檯檳檸檻櫃櫓櫚櫛櫝櫞櫟櫥櫧櫨櫪櫫櫬櫱櫳櫸櫺櫻欄權欏欒欖欞欵欽歎歐歛歟歡歲' +
+    '歷歸歿殘殞殤殨殫殮殯殰殲殺殼毀毆毬毿氂氈氌氣氫氬氳氹氾汎汙決沍沒沖況洩洶浹涇涼淒淚淥淨淪淵淶淺渙減渦測渾湊湞湧湯溈準溝溫溼滄滅滌滎滬滯滲滷滸滻滾滿漁漚漢漣漬漲漵漸漿潁潑潔潙潛潤潯潰潷潿澀澆澇澗澠澤澦澩' +
+    '澮澱濁濃濕濘濟濤濫濬濰濱濺濼濾瀅瀆瀇瀉瀋瀏瀕瀘瀝瀟瀠瀦瀧瀨瀰瀲瀾灃灄灑灕灘灝灠灣灤灧災為烏烴無煉煒煙煢煥煩煬煱熅熒熗熱熲熾燁燄燈燉燐燒燙燜營燦燬燭燴燶燻燼燾燿爍爐爛爭爲爺爾牀牆牋牘牽犖犢犧狀狹狽猙猶猻' +
+    '獁獃獄獅獎獨獪獫獮獰獱獲獵獷獸獺獻獼玀現琺琿瑋瑒瑣瑤瑩瑪瑯瑲璉璣璦璫環璽瓊瓏瓔瓚甌甕產産畝畢畫異當疇疊痀痙痠痾瘂瘋瘍瘓瘞瘡瘧瘮瘲瘺瘻療癆癇癉癒癘癟癡癢癤癥癧癩癬癭癮癰癱癲發皁皚皰皸皺盃盜盞盡監盤盧盪眞' +
+    '眥眾睏睜睞睪瞇瞘瞜瞞瞭瞶瞼矓矚矯砲硏硜硤硨硯碩碭碸確碼磑磚磣磧磯磽礆礎礙礡礦礪礫礬礮礱祕祿禍禎禕禡禦禪禮禰禱禿秈稅稈稏稜稟種稱穀穌積穎穠穡穢穩穫穭窩窪窮窯窵窶窺竄竅竇竈竊竪競筆筍筧筴箇箋箎箏箝節範築篋' +
+    '篔篤篩篳簀簆簍簞簡簣簫簷簹簽簾籃籌籐籙籜籟籠籤籩籪籬籮籲粧粵糝糞糧糰糲糴糶糹糾紀紂約紅紆紇紈紉紋納紐紓純紕紖紗紘紙級紛紜紝紡紬紮細紱紲紳紵紹紺紼紿絀終絃組絅絆絎結絕絛絝絞絡絢給絨絰統絲絳絶絹綁綃綆綈綉' +
+    '綌綏綐綑經綜綞綠綢綣綫綬維綯綰綱網綳綴綵綸綹綺綻綽綾綿緄緇緊緋緑緒緓緔緗緘緙線緝緞締緡緣緦編緩緬緯緱緲練緶緹緻縈縉縊縋縐縑縕縗縛縝縞縟縣縧縫縭縮縱縲縳縴縵縶縷縹總績繃繅繆繒織繕繚繞繡繢繩繪繫繭繮繯繰繳' +
+    '繸繹繼繽繾繿纈纊續纍纏纓纔纖纘纜缽罈罌罎罣罰罵罷羅羆羈羋羣羥羨義羶習翫翹翺耬耮聖聞聯聰聲聳聵聶職聹聽聾肅脅脈脛脣脫脹腎腖腡腦腫腳腸膃膚膠膩膽膾膿臉臍臏臘臚臟臠臢臥臨臺與興舉舊舖艙艤艦艫艱艷芻苎苧茲荊荳' +
+    '莊莖莢莧菓華菸萇萊萬萵葉葒葤葦葯葷蒐蒓蒔蒞蒼蓀蓆蓋蓮蓯蓽蔔蔞蔣蔥蔦蔭蔴蕁蕆蕎蕒蕓蕕蕘蕢蕩蕪蕭蕷薀薈薊薌薑薔薘薟薦薩薳薴薺藉藍藎藝藥藪藴藶藷藹藺蘄蘆蘇蘊蘋蘚蘞蘢蘭蘺蘿虆處虛虜號虧虯蛺蛻蜆蝕蝟蝦蝨蝸螄螞螢' +
+    '螮螻螿蟄蟈蟎蟣蟬蟯蟲蟶蟻蠅蠆蠍蠐蠑蠔蠟蠣蠧蠨蠱蠶蠻衆衊術衚衛衝袞袴裊裏補裝裡製複褌褘褲褳褸褻襇襏襖襝襠襤襪襬襯襲覈見覎規覓視覘覡覥覦親覬覯覲覷覺覽覿觀觴觶觸訁訂訃計訊訌討訐訒訓訕訖託記訛訝訟訢訣訥訩訪' +
+    '設許訴訶診註証詁詆詎詐詒詔評詖詗詘詛詞詠詡詢詣試詩詫詬詭詮詰話該詳詵詼詿誄誅誆誇誌認誑誒誕誘誚語誠誡誣誤誥誦誨說説誰課誶誹誼誾調諂諄談諉請諍諏諑諒論諗諛諜諝諞諡諢諤諦諧諫諭諮諱諳諶諷諸諺諼諾謀謁謂謄謅' +
+    '謊謎謐謔謖謗謙謚講謝謠謡謨謫謬謭謳謹謾譁譅證譎譏譖識譙譚譜譟譫譯議譴護譸譽譾讀變讌讎讒讓讕讖讚讜讞豈豎豐豔豬豶貍貓貙貝貞貟負財貢貧貨販貪貫責貯貰貲貳貴貶買貸貺費貼貽貿賀賁賂賃賄賅資賈賊賑賒賓賕賙賚賜賞' +
+    '賠賡賢賣賤賦賧質賫賬賭賰賴賵賸賺賻購賽賾贄贅贇贈贊贋贍贏贐贓贔贖贗贛贜赬趕趙趨趲跡跤跼踐踡踰踴蹌蹕蹟蹣蹤蹧蹺躂躉躊躋躍躑躒躓躕躚躡躥躦躪軀車軋軌軍軑軒軔軛軟軤軫軲軸軹軺軻軼軾較輅輇輈載輊輒輓輔輕輛輜輝' +
+    '輞輟輥輦輩輪輬輯輳輸輻輾輿轀轂轄轅轆轉轍轎轔轝轟轡轢轤辦辭辮辯農迴逕這連週進遊運過達違遙遜遞遠適遯遲遷選遺遼邁還邇邊邏邐郟郵鄆鄉鄒鄔鄖鄧鄭鄰鄲鄴鄶鄺酇酈醃醖醜醞醫醬醱醼釀釁釃釅釋釐釒釓釔釕釗釘釙針釣釤' +
+    '釦釧釩釵釷釹釺鈀鈁鈃鈄鈈鈉鈍鈎鈐鈑鈒鈔鈕鈞鈣鈥鈦鈧鈮鈰鈳鈴鈷鈸鈹鈺鈽鈾鈿鉀鉅鉈鉉鉋鉍鉑鉕鉗鉚鉛鉞鉢鉤鉦鉬鉭鉶鉸鉺鉻鉿銀銃銅銍銑銓銖銘銚銛銜銠銣銥銦銨銩銪銫銬銱銲銳銷銹銻銼鋁鋃鋅鋇鋌鋏鋒鋙鋝鋟鋣鋤鋥鋦鋨' +
+    '鋩鋪鋭鋮鋯鋰鋱鋶鋸鋼錁錄錆錇錈錏錐錒錕錘錙錚錛錟錠錡錢錦錨錩錫錮錯録錳錶錸鍀鍁鍃鍆鍇鍈鍊鍋鍍鍔鍘鍚鍛鍠鍤鍥鍩鍬鍰鍵鍶鍺鍾鎂鎄鎇鎊鎔鎖鎗鎘鎚鎛鎡鎢鎣鎦鎧鎩鎪鎬鎮鎰鎲鎳鎵鎸鎿鏃鏇鏈鏌鏍鏐鏑鏗鏘鏜鏝鏞鏟鏡鏢' +
+    '鏤鏨鏰鏵鏷鏹鏽鐃鐋鐐鐒鐓鐔鐘鐙鐝鐠鐦鐧鐨鐫鐮鐲鐳鐵鐶鐸鐺鐿鑄鑊鑌鑑鑒鑔鑕鑞鑠鑣鑥鑭鑰鑱鑲鑷鑹鑼鑽鑾鑿钁長門閂閃閆閈閉開閌閎閏閑閒間閔閘閡関閣閥閧閨閩閫閬閭閱閲閶閹閻閼閽閾閿闃闆闇闈闊闋闌闍闐闒闓闔闕闖' +
+    '闘關闞闠闡闢闤闥阨阪陘陝陞陣陰陳陸陽隄隉隊階隕際隨險隱隴隸隻雋雖雙雛雜雞離難雲電霑霢霧霽靂靄靈靚靜靦靨靷鞀鞏鞝鞽韁韃韉韋韌韍韓韙韜韞韮韻響頁頂頃項順頇須頊頌頎頏預頑頒頓頗領頜頡頤頦頭頮頰頲頴頷頸頹頻頽' +
+    '顆題額顎顏顒顓顔願顙顛類顢顥顧顫顬顯顰顱顳顴風颭颮颯颱颳颶颸颺颻颼飀飄飆飈飛飠飢飣飥飩飪飫飭飯飲飴飼飽飾飿餃餄餅餉養餌餎餏餑餒餓餕餖餘餚餛餜餞餡館餬餱餳餵餶餷餺餼餽餾餿饁饃饅饈饉饊饋饌饑饒饗饜饞饢馬馭' +
+    '馮馱馳馴馹駁駐駑駒駔駕駘駙駛駝駟駡駢駭駰駱駸駿騁騂騅騌騍騎騏騖騙騤騧騫騭騮騰騶騷騸騾驀驁驂驃驄驅驊驌驍驏驕驗驚驛驟驢驤驥驦驪驫骯髏髒體髕髖髮鬀鬆鬍鬚鬢鬥鬧鬨鬩鬭鬮鬱魎魘魚魛魢魨魯魴魷魺鮁鮃鮊鮋鮍鮎鮐鮑' +
+    '鮒鮓鮚鮜鮝鮞鮦鮪鮫鮭鮮鮳鮶鮺鯀鯁鯇鯉鯊鯒鯔鯕鯖鯛鯝鯡鯢鯤鯧鯨鯪鯫鯰鯴鯷鯽鯿鰁鰂鰃鰈鰉鰍鰏鰐鰒鰓鰜鰟鰠鰣鰥鰨鰩鰭鰮鰱鰲鰳鰵鰷鰹鰺鰻鰼鰾鱂鱅鱈鱉鱒鱔鱖鱗鱘鱝鱟鱠鱣鱤鱧鱨鱭鱯鱷鱸鱺鳥鳧鳩鳬鳲鳳鳴鳶鳾鴆鴇鴉鴒' +
+    '鴕鴛鴝鴞鴟鴣鴦鴨鴯鴰鴴鴷鴻鴿鵁鵂鵃鵐鵑鵒鵓鵜鵝鵠鵡鵪鵬鵮鵯鵲鵷鵾鶄鶇鶉鶊鶓鶖鶘鶚鶡鶥鶩鶪鶬鶯鶲鶴鶹鶺鶻鶼鷀鷁鷂鷄鷈鷊鷓鷖鷗鷙鷚鷥鷦鷫鷯鷲鷳鷸鷹鷺鷽鷿鸂鸇鸌鸏鸕鸘鸚鸛鸝鸞鹵鹹鹺鹼鹽麗麤麥麩麯麵麼麽黃黌點' +
+    '黨黲黴黶黷黽黿鼇鼈鼉鼕鼴齊齋齎齏齒齔齕齗齙齜齟齠齡齣齦齧齩齪齬齲齶齷龍龎龐龔龕龜㠏㩜䊷䋙䋻䝼䬗䯀䰾䱽䲁䶧';
+const T2S_DST =
+    '丢并干乱亘亚伫布占并来仑侣局俣系伣侠私具伥俩俫仓个们幸仿伦伟侧侦伪杰伧伞备家佣偬传伛债伤倾偻仅戮佥侨仆伪侥偾雇价仪侬亿侩俭傧俦侪尽偿优储俪㑩傩傥俨凶兑儿兖内两册幂净冻凛凯别删刭则克刹刬刚剥剐剀创铲划剧' +
+    '刘刽刿剑㓥剂㔉劲动勖务勋胜劳势勚劢勋励劝匀匦汇匮区协恤却厍厕厌厉厣参叁丛咤吣吴呐吕啕呙员呗吣念问启哑启唡㖞唤亮丧吃乔单哟呛啬唝吗呜唢哔叹喽呕啧尝唛哗唠啸叽哓呒啴嘘㖊咝哒哝哕嗳哙喷吨当咛吓哜尝噜啮咽呖咙' +
+    '向亸喾严嘤啭嗫嚣冁呓啰禧嘱啮囱囵国围园圆图团埯垭采执坚垩垴埚尧报场块茔垲埘涂冢坞埙尘堑垫坠堕坟墙垦坛垱埙压垒圹垆坛坏垄垅坜坝壮壶壸寿够梦伙夹奂奥奁夺奖奋姹妆姐姗奸侄娱娄妇娅娲妫媪妈袅妪妩娴婳妫娆婵娇嫱' +
+    '袅嫒嬷嫔婴婶娘娈孙学孪宫寝实宁审写宽宠宝克将专寻对导尴届尸屃屉屡层屦属冈岘岛峡崃昆岗仑峥岽岚嵝崭岖嵚崂峤峣峄崄岙嵘岭屿岿峦巅岩巯帅师帐带帧帏帼帻帜币帮帱干几库厕厢厩厦厨厮庙厂庑废广廪庐厅回弑吊弪张强别' +
+    '弹弥弯汇彝彦佛后径从徕复彷征彻恒耻悦悮德怅闷凄恶恼恽恻爱惬悫怆恺忾栗殷态愠惨惭恸惯悫怄怂虑悭庆戚欲忧惫怜凭愦惮愤悯怃宪忆勤恳应怿懔蒙怼懑恹忧惩懒怀悬忏惧慑恋戆戋戗戬战戯戏户抛捝挟舍扪卷扫抡挜挣挂采拣扬' +
+    '换挥构损摇捣捶扇拓揾抢榨捂掴掼搂挚抠抟折掺捞挦撑挠捻㧑挢掸掸拨抚扑揿挞挝捡拥掳择击挡㧟担据挤捣拟摈拧搁掷扩撷摆擞撸扰摅撵拢拦撄搀撺携摄攒挛摊搅揽败叙敌数敛毙斓斩断于升时晋昼晕晖旸畅暂昵晔历昙晓向暧旷昽' +
+    '晒书会胧东丫栅杆栀枧条枭棁弃枨枣栋栈栖梾桠杨枫桢业极谷杩荣榅桤构枪杠橐梿椠椁桨桩乐枞梁楼标枢样朴树桦桡桥机椭横檩柽档桧楫槚检樯梼台槟柠槛柜橹榈栉椟橼栎橱槠栌枥橥榇蘖栊榉棂樱栏权椤栾榄棂款钦叹欧敛欤欢岁' +
+    '历归殁残殒殇㱮殚殓殡㱩歼杀壳毁殴球毵牦毡氇气氢氩氲凼泛泛污决冱没冲况泄汹浃泾凉凄泪渌净沦渊涞浅涣减涡测浑凑浈涌汤沩准沟温湿沧灭涤荥沪滞渗卤浒浐滚满渔沤汉涟渍涨溆渐浆颍泼洁沩潜润浔溃滗涠涩浇涝涧渑泽滪泶' +
+    '浍淀浊浓湿泞济涛滥浚潍滨溅泺滤滢渎㲿泻沈浏濒泸沥潇潆潴泷濑弥潋澜沣滠洒漓滩灏漤湾滦滟灾为乌烃无炼炜烟茕焕烦炀㶽煴荧炝热颎炽烨焰灯炖磷烧烫焖营灿毁烛烩㶶熏烬焘耀烁炉烂争为爷尔床墙笺牍牵荦犊牺状狭狈狰犹狲' +
+    '犸呆狱狮奖独狯猃狝狞㺍获猎犷兽獭献猕猡现珐珲玮玚琐瑶莹玛琅玱琏玑瑷珰环玺琼珑璎瓒瓯瓮产产亩毕画异当畴叠佝痉酸疴痖疯疡痪瘗疮疟瘆疭瘘瘘疗痨痫瘅愈疠瘪痴痒疖症疬癞癣瘿瘾痈瘫癫发皂皑疱皲皱杯盗盏尽监盘卢荡真' +
+    '眦众困睁睐睾眯眍䁖瞒了瞆睑眬瞩矫炮研硁硖砗砚硕砀砜确码硙砖碜碛矶硗硷础碍礴矿砺砾矾炮砻秘禄祸祯祎祃御禅礼祢祷秃籼税秆䅉棱禀种称谷稣积颖秾穑秽稳获稆窝洼穷窑窎窭窥窜窍窦灶窃竖竞笔笋笕䇲个笺篪筝钳节范筑箧' +
+    '筼笃筛筚箦筘篓箪简篑箫檐筜签帘篮筹藤箓箨籁笼签笾簖篱箩吁妆粤糁粪粮团粝籴粜纟纠纪纣约红纡纥纨纫纹纳纽纾纯纰纼纱纮纸级纷纭纴纺䌷扎细绂绁绅纻绍绀绋绐绌终弦组䌹绊绗结绝绦绔绞络绚给绒绖统丝绛绝绢绑绡绠绨绣' +
+    '绤绥䌼捆经综缍绿绸绻线绶维绹绾纲网绷缀彩纶绺绮绽绰绫绵绲缁紧绯绿绪绬绱缃缄缂线缉缎缔缗缘缌编缓缅纬缑缈练缏缇致萦缙缢缒绉缣缊缞缚缜缟缛县绦缝缡缩纵缧䌸纤缦絷缕缥总绩绷缫缪缯织缮缭绕绣缋绳绘系茧缰缳缲缴' +
+    '䍁绎继缤缱䍀缬纩续累缠缨才纤缵缆钵坛罂坛挂罚骂罢罗罴羁芈群羟羡义膻习玩翘翱耧耢圣闻联聪声耸聩聂职聍听聋肃胁脉胫唇脱胀肾胨脶脑肿脚肠腽肤胶腻胆脍脓脸脐膑腊胪脏脔臜卧临台与兴举旧铺舱舣舰舻艰艳刍苧苎兹荆豆' +
+    '庄茎荚苋果华烟苌莱万莴叶荭荮苇药荤搜莼莳莅苍荪席盖莲苁荜卜蒌蒋葱茑荫麻荨蒇荞荬芸莸荛蒉荡芜萧蓣蕰荟蓟芗姜蔷荙莶荐萨䓕苧荠借蓝荩艺药薮蕴苈薯蔼蔺蕲芦苏蕴苹藓蔹茏兰蓠萝蔂处虚虏号亏虬蛱蜕蚬蚀猬虾虱蜗蛳蚂萤' +
+    '䗖蝼螀蛰蝈螨虮蝉蛲虫蛏蚁蝇虿蝎蛴蝾蚝蜡蛎蠹蟏蛊蚕蛮众蔑术胡卫冲衮绔袅里补装里制复裈袆裤裢褛亵裥袯袄裣裆褴袜䙓衬袭核见觃规觅视觇觋觍觎亲觊觏觐觑觉览觌观觞觯触讠订讣计讯讧讨讦讱训讪讫托记讹讶讼䜣诀讷讻访' +
+    '设许诉诃诊注证诂诋讵诈诒诏评诐诇诎诅词咏诩询诣试诗诧诟诡诠诘话该详诜诙诖诔诛诓夸志认诳诶诞诱诮语诚诫诬误诰诵诲说说谁课谇诽谊訚调谄谆谈诿请诤诹诼谅论谂谀谍谞谝谥诨谔谛谐谏谕谘讳谙谌讽诸谚谖诺谋谒谓誊诌' +
+    '谎谜谧谑谡谤谦谥讲谢谣谣谟谪谬谫讴谨谩哗䜧证谲讥谮识谯谭谱噪谵译议谴护诪誉谫读变䜩雠谗让谰谶赞谠谳岂竖丰艳猪豮狸猫䝙贝贞贠负财贡贫货贩贪贯责贮贳赀贰贵贬买贷贶费贴贻贸贺贲赂赁贿赅资贾贼赈赊宾赇赒赉赐赏' +
+    '赔赓贤卖贱赋赕质赍账赌䞐赖赗剩赚赙购赛赜贽赘赟赠赞赝赡赢赆赃赑赎赝赣赃赪赶赵趋趱迹交局践蜷逾踊跄跸迹蹒踪糟跷跶趸踌跻跃踯跞踬蹰跹蹑蹿躜躏躯车轧轨军轪轩轫轭软轷轸轱轴轵轺轲轶轼较辂辁辀载轾辄挽辅轻辆辎辉' +
+    '辋辍辊辇辈轮辌辑辏输辐辗舆辒毂辖辕辘转辙轿辚舆轰辔轹轳办辞辫辩农回迳这连周进游运过达违遥逊递远适遁迟迁选遗辽迈还迩边逻逦郏邮郓乡邹邬郧邓郑邻郸邺郐邝酂郦腌酝丑酝医酱酦宴酿衅酾酽释厘钅钆钇钌钊钉钋针钓钐' +
+    '扣钏钒钗钍钕钎钯钫钘钭钚钠钝钩钤钣钑钞钮钧钙钬钛钪铌铈钶铃钴钹铍钰钸铀钿钾钜铊铉铇铋铂钷钳铆铅钺钵钩钲钼钽铏铰铒铬铪银铳铜铚铣铨铢铭铫铦衔铑铷铱铟铵铥铕铯铐铞焊锐销锈锑锉铝锒锌钡铤铗锋铻锊锓铘锄锃锔锇' +
+    '铓铺锐铖锆锂铽锍锯钢锞录锖锫锩铔锥锕锟锤锱铮锛锬锭锜钱锦锚锠锡锢错录锰表铼锝锨锪钔锴锳炼锅镀锷铡钖锻锽锸锲锘锹锾键锶锗钟镁锿镅镑镕锁枪镉锤镈镃钨蓥镏铠铩锼镐镇镒镋镍镓镌镎镞镟链镆镙镠镝铿锵镗镘镛铲镜镖' +
+    '镂錾镚铧镤镪锈铙铴镣铹镦镡钟镫镢镨锎锏镄镌镰镯镭铁镮铎铛镱铸镬镔鉴鉴镲锧镴铄镳镥镧钥镵镶镊镩锣钻銮凿䦆长门闩闪闫闬闭开闶闳闰闲闲间闵闸阂关阁阀哄闺闽阃阆闾阅阅阊阉阎阏阍阈阌阒板暗闱阔阕阑阇阗阘闿阖阙闯' +
+    '斗关阚阓阐辟阛闼厄坂陉陕升阵阴陈陆阳堤陧队阶陨际随险隐陇隶只隽虽双雏杂鸡离难云电沾霡雾霁雳霭灵靓静腼靥纼鼗巩绱鞒缰鞑鞯韦韧韨韩韪韬韫韭韵响页顶顷项顺顸须顼颂颀颃预顽颁顿颇领颌颉颐颏头颒颊颋颕颔颈颓频颓' +
+    '颗题额颚颜颙颛颜愿颡颠类颟颢顾颤颥显颦颅颞颧风飐飑飒台刮飓飔飏飖飕飗飘飙飚飞饣饥饤饦饨饪饫饬饭饮饴饲饱饰饳饺饸饼饷养饵饹饻饽馁饿馂饾余肴馄馃饯馅馆糊糇饧喂馉馇馎饩馈馏馊馌馍馒馐馑馓馈馔饥饶飨餍馋馕马驭' +
+    '冯驮驰驯驲驳驻驽驹驵驾骀驸驶驼驷骂骈骇骃骆骎骏骋骍骓骔骒骑骐骛骗骙䯄骞骘骝腾驺骚骟骡蓦骜骖骠骢驱骅骕骁骣骄验惊驿骤驴骧骥骦骊骉肮髅脏体髌髋发剃松胡须鬓斗闹哄阋斗阄郁魉魇鱼鱽鱾鲀鲁鲂鱿鲄鲅鲆鲌鲉鲏鲇鲐鲍' +
+    '鲋鲊鲒鲘鲞鲕鲖鲔鲛鲑鲜鲓鲪鲝鲧鲠鲩鲤鲨鲬鲻鲯鲭鲷鲴鲱鲵鲲鲳鲸鲮鲰鲶鲺鳀鲫鳊鳈鲗鳂鲽鳇鳅鲾鳄鳆鳃鳒鳑鳋鲥鳏鳎鳐鳍鳁鲢鳌鳓鳘鲦鲣鲹鳗鳛鳔鳉鳙鳕鳖鳟鳝鳜鳞鲟鲼鲎鲙鳣鳡鳢鲿鲚鳠鳄鲈鲡鸟凫鸠凫鸤凤鸣鸢䴓鸩鸨鸦鸰' +
+    '鸵鸳鸲鸮鸱鸪鸯鸭鸸鸹鸻䴕鸿鸽䴔鸺鸼鹀鹃鹆鹁鹈鹅鹄鹉鹌鹏鹐鹎鹊鹓鹍䴖鸫鹑鹒鹋鹙鹕鹗鹖鹛鹜䴗鸧莺鹟鹤鹠鹡鹘鹣鹚鹢鹞鸡䴘鹝鹧鹥鸥鸷鹨鸶鹪鹔鹩鹫鹇鹬鹰鹭鸴䴙㶉鹯鹱鹲鸬鹴鹦鹳鹂鸾卤咸鹾碱盐丽粗麦麸曲面么么黄黉点' +
+    '党黪霉黡黩黾鼋鳌鳖鼍冬鼹齐斋赍齑齿龀龁龂龅龇龃龆龄出龈啮咬龊龉龋腭龌龙厐庞龚龛龟㟆㨫䌶䌺䌾䞍扬䯅鲃䲝鳚咬';
+
+// =============================================================
+// B16 — PHRASE CUES from WORD-level timestamps (MP4/MP3 → original SRT)
+// =============================================================
+// Why: Groq (segment), AssemblyAI (/sentences) and Gladia (utterances / ready-made SRT) only gave
+// sentence-level timing, so Chinese came out as 30-80 character cues, words were cut in half at
+// chunk borders, and Traditional / Simplified characters were mixed. Now every provider is asked
+// for WORD timestamps, all chunks are merged into ONE timeline, and short phrase-sized cues are
+// rebuilt from it (split at real pauses, punctuation and word boundaries).
+const LS_ZH_SCRIPT = 'neoyangon_zh_script'; // 'simplified' (default) | 'off' — localStorage.setItem('neoyangon_zh_script','off') keeps the provider's own script
+const CHUNK_PAD_SEC = 1.5;                  // each chunk is sent with this much extra audio on both sides; only words whose centre lies inside the chunk's own range are kept
+const PHRASE_OPTS = {
+    cjk:   { maxChars: 18, minChars: 4,  pauseSec: 0.30, maxDurSec: 5.5 },
+    latin: { maxChars: 42, minChars: 12, pauseSec: 0.60, maxDurSec: 6.0 }
+};
+const CJK_ANY_RE = /[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7af]/;
+const END_SENT_RE = /(?:[。！？!?…]|\.)["”’」』）)]*$/;
+const END_CLAUSE_RE = /[，、；：,;:]["”’」』）)]*$/;
+const VISIBLE_STRIP_RE = /[\s，。！？、；：…·“”‘’「」『』（）《》〈〉【】—～,.!?;:"'()\[\]-]/g;
+
+// Provider words → [{text,start,end}] in seconds, sorted. A runaway token (Whisper sometimes
+// stretches the last word over the following silence) is capped at 1.5 s.
+function normalizeWordList(list, toSec) {
+    const out = [];
+    (list || []).forEach(w => {
+        const text = String((w && (w.text !== undefined ? w.text : w.word)) ?? '').trim();
+        let s = Number(w && w.start), e = Number(w && w.end);
+        if (!text || !isFinite(s)) return;
+        s = toSec(s);
+        e = isFinite(e) ? toSec(e) : s + 0.3;
+        if (e < s) e = s + 0.05;
+        if (e - s > 1.5) e = s + 1.5;
+        out.push({ text, start: s, end: e });
+    });
+    out.sort((a, b) => a.start - b.start);
+    return out;
+}
+
+function joinWithOffsets(tokens) {
+    let out = '';
+    const ends = [];
+    tokens.forEach(t => {
+        if (out) {
+            const a = out.charAt(out.length - 1), b = t.text.charAt(0);
+            const glue = (CJK_ANY_RE.test(a) && CJK_ANY_RE.test(b)) || /[，。！？、；：…（「“]/.test(a);
+            if (!glue) out += ' ';
+        }
+        out += t.text;
+        ends.push(out.length);
+    });
+    return { text: out, ends };
+}
+function glueText(a, b) {
+    const x = a.charAt(a.length - 1), y = b.charAt(0);
+    return (CJK_ANY_RE.test(x) && CJK_ANY_RE.test(y)) ? a + b : a + ' ' + b;
+}
+function lenOfText(text, mode) {
+    return mode === 'cjk' ? text.replace(VISIBLE_STRIP_RE, '').length : text.trim().length;
+}
+function lenOfTokens(tokens, mode) {
+    return lenOfText(joinWithOffsets(tokens).text, mode);
+}
+
+// Word boundaries inside an unspaced Chinese string (so a cue never breaks "储物|戒指" when a
+// better break exists). Intl.Segmenter is built into current browsers; if it is missing we
+// simply skip this preference.
+let _wordSegmenter;
+function wordBoundarySet(text) {
+    try {
+        if (_wordSegmenter === undefined) {
+            _wordSegmenter = (typeof Intl !== 'undefined' && Intl.Segmenter) ? new Intl.Segmenter('zh', { granularity: 'word' }) : null;
+        }
+        if (!_wordSegmenter) return null;
+        const set = new Set();
+        for (const s of _wordSegmenter.segment(text)) { set.add(s.index); set.add(s.index + s.segment.length); }
+        return set;
+    } catch (e) { return null; }
+}
+
+function detectCueMode(sample) {
+    const cjk = (sample.match(/[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7af]/g) || []).length;
+    const other = (sample.match(/[A-Za-z\u00C0-\u024F\u0400-\u04FF\u0600-\u06FF\u1000-\u109F]/g) || []).length;
+    return cjk >= Math.max(1, other) ? 'cjk' : 'latin';
+}
+
+// words: [{text,start,end}] on ONE timeline. Returns [{start,end,text}] (raw text, still with punctuation).
+function buildPhraseCues(words, mode) {
+    const o = PHRASE_OPTS[mode];
+    const cues = [];
+    let cur = [];
+
+    const emit = (toks) => {
+        if (!toks.length) return;
+        cues.push({ start: toks[0].start, end: toks[toks.length - 1].end, text: joinWithOffsets(toks).text });
+    };
+
+    // Best index i (1..n-1) to break BEFORE toks[i]: biggest pause wins, sentence/clause punctuation
+    // adds a bonus, breaking in the middle of a lexical word is penalised.
+    const bestBreak = (toks) => {
+        const joined = joinWithOffsets(toks);
+        const bounds = mode === 'cjk' ? wordBoundarySet(joined.text) : null;
+        let bi = -1, bs = -Infinity;
+        for (let i = 1; i < toks.length; i++) {
+            if (lenOfTokens(toks.slice(0, i), mode) < o.minChars) continue;
+            let score = toks[i].start - toks[i - 1].end;
+            const prevText = toks[i - 1].text;
+            if (END_SENT_RE.test(prevText)) score += 1.0;
+            else if (END_CLAUSE_RE.test(prevText)) score += 0.4;
+            if (bounds && !bounds.has(joined.ends[i - 1])) score -= 0.9;
+            if (score >= bs) { bs = score; bi = i; }
+        }
+        return bi;
+    };
+
+    for (const w of words) {
+        if (cur.length) {
+            const prev = cur[cur.length - 1];
+            const gap = w.start - prev.end;
+            const curLen = lenOfTokens(cur, mode);
+            let brk = false;
+            if (gap >= o.pauseSec) brk = true;
+            else if (END_SENT_RE.test(prev.text) && curLen >= o.minChars) brk = true;
+            else if (END_CLAUSE_RE.test(prev.text) && curLen >= o.minChars + 2) brk = true;
+            if (brk) { emit(cur); cur = []; }
+        }
+        cur.push(w);
+        while (cur.length > 1 && (lenOfTokens(cur, mode) > o.maxChars || (cur[cur.length - 1].end - cur[0].start) > o.maxDurSec)) {
+            const bi = bestBreak(cur);
+            if (bi > 0) { emit(cur.slice(0, bi)); cur = cur.slice(bi); }
+            else { emit(cur.slice(0, -1)); cur = cur.slice(-1); }
+        }
+    }
+    emit(cur);
+    return cues;
+}
+
+// Tiny leftovers (1-2 CJK characters) that were split off WITHOUT a real pause are glued back onto
+// the neighbour they are closest to — a real pause (a one-word reply like 好) is left alone.
+function mergeTinyCues(cues, mode) {
+    const o = PHRASE_OPTS[mode];
+    const tiny = mode === 'cjk' ? 2 : 3;
+    const MAX_GAP = 0.45;
+    const out = [];
+    for (let i = 0; i < cues.length; i++) {
+        const c = cues[i];
+        if (lenOfText(c.text, mode) > tiny) { out.push(c); continue; }
+        const prev = out[out.length - 1], next = cues[i + 1];
+        const gp = prev ? c.start - prev.end : Infinity;
+        const gn = next ? next.start - c.end : Infinity;
+        const fitsPrev = !!prev && gp < MAX_GAP && lenOfText(prev.text + c.text, mode) <= o.maxChars + 4;
+        const fitsNext = !!next && gn < MAX_GAP && lenOfText(c.text + next.text, mode) <= o.maxChars + 4;
+        if (fitsNext && (!fitsPrev || gn <= gp)) { next.start = c.start; next.text = glueText(c.text, next.text); }
+        else if (fitsPrev) { prev.end = c.end; prev.text = glueText(prev.text, c.text); }
+        else out.push(c);
+    }
+    return out;
+}
+
+// Fallback for a chunk where the provider returned NO word timestamps: cut each sentence-level
+// segment at punctuation / max length and share its time by character count.
+function segmentToCues(seg, mode) {
+    const o = PHRASE_OPTS[mode];
+    const text = String(seg.text || '').trim();
+    if (!text) return [];
+    const pieces = text.match(/[^。！？!?，、；,;…]+[。！？!?，、；,;…]*|[。！？!?，、；,;…]+/g) || [text];
+    const groups = [];
+    let cur = '';
+    pieces.forEach(p => {
+        if (!cur || lenOfText(cur + p, mode) <= o.maxChars) cur += p;
+        else { groups.push(cur); cur = p; }
+    });
+    if (cur) groups.push(cur);
+    const finalParts = [];
+    groups.forEach(g => {
+        if (lenOfText(g, mode) <= o.maxChars * 1.3) { finalParts.push(g); return; }
+        if (mode === 'cjk') {
+            const chars = Array.from(g);
+            for (let i = 0; i < chars.length; i += o.maxChars) finalParts.push(chars.slice(i, i + o.maxChars).join(''));
+        } else {
+            let line = '';
+            g.split(/\s+/).forEach(wd => {
+                if (line && (line + ' ' + wd).length > o.maxChars) { finalParts.push(line); line = wd; }
+                else line = line ? line + ' ' + wd : wd;
+            });
+            if (line) finalParts.push(line);
+        }
+    });
+    const total = finalParts.reduce((n, p) => n + Math.max(1, lenOfText(p, mode)), 0);
+    const dur = Math.max(seg.end - seg.start, 0.1);
+    let t = seg.start;
+    return finalParts.map(p => {
+        const share = Math.max(1, lenOfText(p, mode)) / total;
+        const s = t, e = t + dur * share;
+        t = e;
+        return { start: s, end: e, text: p };
+    });
+}
+
+let _t2sMap = null;
+function toSimplifiedChinese(text) {
+    if (!_t2sMap) {
+        _t2sMap = new Map();
+        const src = Array.from(T2S_SRC), dst = Array.from(T2S_DST);
+        for (let i = 0; i < src.length; i++) _t2sMap.set(src[i], dst[i]);
+    }
+    const chars = Array.from(text);
+    let out = '';
+    for (let i = 0; i < chars.length; i++) {
+        const c = chars[i];
+        if (c === '乾' && (chars[i + 1] === '坤' || chars[i - 1] === '坤')) { out += c; continue; } // 乾坤 is spelled the same in Simplified
+        out += _t2sMap.get(c) || c;
+    }
+    return out;
+}
+
+function shouldSimplifyChinese(language, mode, sample) {
+    if (mode !== 'cjk') return false;
+    if (safeLsGet(LS_ZH_SCRIPT) === 'off') return false;
+    const lang = String(language || 'auto').toLowerCase();
+    const zhLike = lang === 'auto' || lang === 'zh' || lang === 'chinese' || lang.startsWith('zh-') || lang.startsWith('zh_');
+    if (!zhLike || /(?:^|[-_])(tw|hk|mo|hant)$/.test(lang)) return false;
+    if (/[\u3040-\u30ff\uac00-\ud7af]/.test(sample)) return false; // kana / hangul present → Japanese or Korean, leave kanji alone
+    return true;
+}
+
+// Final cue text: CJK cues carry no punctuation and no spaces between Han characters (same look as
+// hand-made Chinese subtitles); stray Arabic/Hebrew glyphs Whisper hallucinates are removed.
+function finalizeCueText(text, mode, simplify) {
+    let t = String(text || '');
+    if (mode === 'cjk') {
+        t = t.replace(/[\u0590-\u08FF]/g, '')
+             .replace(/[，。！？、；：…·“”‘’「」『』（）《》〈〉【】—～,!?;:"()\[\]]|\.(?!\d)/g, ' ')
+             .replace(/\s+/g, ' ').trim()
+             .replace(/([\u3400-\u9fff])\s+(?=[\u3400-\u9fff])/g, '$1');
+        if (simplify) t = toSimplifiedChinese(t);
+    } else {
+        t = t.replace(/\s+/g, ' ').trim();
+    }
+    return t;
+}
+
+function emptyUnits() { return { words: [], segs: [] }; }
+
+// One chunk's provider result → units on the FULL media timeline. `offsetSec` is where the sent
+// audio started (chunk start minus padding); `core` is the chunk's own [start,end) range — words /
+// segments whose centre lies outside it belong to the neighbouring chunk and are dropped.
+function providerResultToUnits(result, offsetSec, core) {
+    const keep = (s, e) => { const m = (s + e) / 2; return m >= core.start && m < core.end; };
+    if ((result.words || []).length) {
+        const words = [];
+        result.words.forEach(w => {
+            const s = w.start + offsetSec, e = w.end + offsetSec;
+            if (keep(s, e)) words.push({ text: w.text, start: s, end: e });
+        });
+        return { words, segs: [] };
+    }
+    let rawSegs = result.segments || [];
+    if (!rawSegs.length && result.srtDirect) {
+        rawSegs = parseSrt(result.srtDirect).map(s => {
+            const p = s.timeLine.split('-->').map(x => x.trim());
+            const a = p.length === 2 ? parseSrtTimestampToMs(p[0]) : null;
+            const b = p.length === 2 ? parseSrtTimestampToMs(p[1]) : null;
+            return (a === null || b === null) ? null : { start: a / 1000, end: b / 1000, text: s.textLines.join(' ') };
+        }).filter(Boolean);
+    }
+    const segs = [];
+    rawSegs.forEach(s => {
+        if (!(s.text || '').trim()) return;
+        const a = s.start + offsetSec, b = s.end + offsetSec;
+        if (keep(a, b)) segs.push({ start: a, end: b, text: s.text });
+    });
+    return { words: [], segs };
+}
+
+// All chunks' units → final subs [{timeLine,textLines}] (sorted, punctuation-free, one script).
+function assemblePhraseSubs(results, language, envelope, onLog) {
+    const words = [], segs = [];
+    results.forEach(r => {
+        if (!r) return;
+        (r.words || []).forEach(w => words.push(w));
+        (r.segs || []).forEach(s => segs.push(s));
+    });
+    if (!words.length && !segs.length) return [];
+    words.sort((a, b) => a.start - b.start);
+
+    const sample = words.map(w => w.text).join('') + segs.map(s => s.text).join('');
+    const mode = detectCueMode(sample);
+    const simplify = shouldSimplifyChinese(language, mode, sample);
+
+    let cues = buildPhraseCues(words, mode);
+    segs.forEach(s => segmentToCues(s, mode).forEach(c => cues.push(c)));
+    cues.sort((a, b) => a.start - b.start);
+    cues = mergeTinyCues(cues, mode);
+
+    // Cues over (almost) pure silence are Whisper hallucinations (music / noise → "imp", "col", …).
+    let noSpeech = 0;
+    if (envelope && envelope.speechRatio(0, envelope.duration) >= 0.05) {
+        cues = cues.filter(c => {
+            if (envelope.speechRatio(c.start, c.end) < 0.10) { noSpeech++; return false; }
+            return true;
+        });
+    }
+
+    const subs = [];
+    cues.forEach(c => {
+        const text = finalizeCueText(c.text, mode, simplify);
+        if (!text || c.end <= c.start) return;
+        subs.push({ timeLine: `${formatSrtTimestamp(c.start)} --> ${formatSrtTimestamp(c.end)}`, textLines: [text] });
+    });
+    if (onLog) {
+        onLog(`Phrase cue: word ${words.length} လုံး + segment ${segs.length} ခု → cue ${subs.length} ခု (${mode === 'cjk' ? 'CJK' : 'Latin'} mode${simplify ? ', Simplified ပြောင်းပြီး' : ''})`, 'ok');
+        if (noSpeech > 0) onLog(`အသံမရှိတဲ့ နေရာက cue ${noSpeech} ခု (hallucination) ကို ဖယ်လိုက်သည်`, 'warn');
+    }
+    return subs;
+}
+// ---- B16 END ----
+
 function sleep(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
 
 // Small exponential backoff before a retry after a failed attempt (HTTP error or timeout).
@@ -2594,24 +2974,41 @@ function retryBackoffMs(attempt) {
 // Groq (Whisper) transcription call
 // =============================================================
 async function callGroqTranscribe(key, file, language, timeoutSec) {
-    const form = new FormData();
-    form.append('file', file, file.name);
-    form.append('model', getGroqModel());
-    form.append('response_format', 'verbose_json');
-    form.append('timestamp_granularities[]', 'segment');
-    if (language && language !== 'auto') form.append('language', language);
+    // B16: word-level timestamps (needed for phrase cues). If a model rejects the 'word'
+    // granularity, the request is repeated once with segments only.
+    const buildForm = (withWords) => {
+        const f = new FormData();
+        f.append('file', file, file.name);
+        f.append('model', getGroqModel());
+        f.append('response_format', 'verbose_json');
+        f.append('timestamp_granularities[]', 'segment');
+        if (withWords) f.append('timestamp_granularities[]', 'word');
+        if (language && language !== 'auto') f.append('language', language);
+        return f;
+    };
 
     const controller = new AbortController();
     activeTranscribeAbortControllers.push(controller);
     const timer = setTimeout(() => controller.abort(), Math.max(timeoutSec, 10) * 1000);
 
     try {
-        const response = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
+        const groqUrl = 'https://api.groq.com/openai/v1/audio/transcriptions';
+        let response = await fetch(groqUrl, {
             method: 'POST',
             headers: { 'Authorization': `Bearer ${key}` },
-            body: form,
+            body: buildForm(true),
             signal: controller.signal
         });
+        if (response.status === 400) {
+            const firstErr = await response.text().catch(() => '');
+            if (!/timestamp|granularit|word/i.test(firstErr)) throw new Error(`Groq HTTP 400${firstErr ? ' — ' + firstErr.slice(0, 140) : ''}`);
+            response = await fetch(groqUrl, {
+                method: 'POST',
+                headers: { 'Authorization': `Bearer ${key}` },
+                body: buildForm(false),
+                signal: controller.signal
+            });
+        }
 
         if (!response.ok) {
             const errBody = await response.text().catch(() => '');
@@ -2625,6 +3022,7 @@ async function callGroqTranscribe(key, file, language, timeoutSec) {
         return {
             fullText: (data.text || segments.map(s => s.text).join(' ')).trim(),
             segments,
+            words: normalizeWordList(data.words, x => x),
             srtDirect: null,
             raw: data
         };
@@ -2691,9 +3089,12 @@ async function callGladiaTranscribe(key, file, language, timeoutSec, onLog) {
                     start: u.start, end: u.end, text: (u.text || '').trim()
                 }));
                 const srtEntry = (t.subtitles || []).find(s => s.format === 'srt');
+                const gladiaWords = [];
+                (t.utterances || []).forEach(u => (u.words || []).forEach(w => gladiaWords.push(w)));
                 return {
                     fullText: (t.full_transcript || utterances.map(u => u.text).join(' ')).trim(),
                     segments: utterances,
+                    words: normalizeWordList(gladiaWords, x => x),
                     srtDirect: srtEntry ? srtEntry.subtitles : null,
                     raw: pollData
                 };
@@ -2776,6 +3177,7 @@ async function callAssemblyAiTranscribe(key, file, language, timeoutSec, onLog) 
                 return {
                     fullText: (pollData.text || '').trim(),
                     segments,
+                    words: normalizeWordList(pollData.words, ms => ms / 1000),
                     srtDirect: null,
                     raw: pollData
                 };
@@ -2888,7 +3290,9 @@ function offsetProviderChunkResult(result, offsetSec, onLog) {
 // geminiTranscribeWithWorkers below — the only difference is each chunk is sent through
 // transcribeChunkWithRotation (Gladia/Groq/AssemblyAI pool) instead of straight to Gemini.
 async function transcribeMediaWithWorkers(audioBuffer, chunkSizeSec, workerCount, language, maxRetries, timeoutSec, onLog, useWaveformSync = true) {
-    const timeChunks = buildSmartTimeChunks(audioBuffer, chunkSizeSec, onLog);
+    let env = null;
+    try { env = computeSpeechEnvelope(audioBuffer, null); } catch (e) { env = null; }
+    const timeChunks = buildSmartTimeChunks(audioBuffer, chunkSizeSec, onLog, env);
     const results = new Array(timeChunks.length);
     const providerCounts = {};
 
@@ -2906,7 +3310,7 @@ async function transcribeMediaWithWorkers(audioBuffer, chunkSizeSec, workerCount
             if (myIdx >= timeChunks.length) return;
             const { start, end } = timeChunks[myIdx];
             if (timeChunks[myIdx].silent) {
-                results[myIdx] = [];
+                results[myIdx] = emptyUnits();
                 onLog(`Chunk ${myIdx + 1}/${timeChunks.length} (${formatTime(start)}–${formatTime(end)}) စကားမပါ — ကျော်လိုက်သည် (quota သက်သာ)`, 'ok');
                 done++;
                 updateTranscribeChunkProgress(done, timeChunks.length);
@@ -2922,8 +3326,13 @@ async function transcribeMediaWithWorkers(audioBuffer, chunkSizeSec, workerCount
             // until it succeeds or the user hits Stop, instead of skipping it after maxRetries.
             let chunkRound = 0;
             let chunkFile;
+            // B16: send a little extra audio on both sides so a word on the chunk border is heard whole;
+            // only words whose centre lies inside [start,end) are kept (see providerResultToUnits).
+            const padStart = Math.max(0, start - CHUNK_PAD_SEC);
+            const padEnd = Math.min(audioBuffer.duration, end + CHUNK_PAD_SEC);
+            const core = { start: myIdx === 0 ? -Infinity : start, end: myIdx === timeChunks.length - 1 ? Infinity : end };
             try {
-                const sliceBuf = sliceAudioBuffer(audioBuffer, start, end);
+                const sliceBuf = sliceAudioBuffer(audioBuffer, padStart, padEnd);
                 const resampled = await resampleTo16kMono(sliceBuf);
                 chunkFile = new File([audioBufferToWavBlob(resampled)], `chunk_${myIdx + 1}.wav`, { type: 'audio/wav' });
             } catch (e) {
@@ -2935,10 +3344,10 @@ async function transcribeMediaWithWorkers(audioBuffer, chunkSizeSec, workerCount
                 try {
                     if (transcribeAborted) return;
                     const result = await transcribeChunkWithRotation(chunkFile, language, maxRetries, timeoutSec, onLog);
-                    results[myIdx] = offsetProviderChunkResult(result, start, onLog);
+                    results[myIdx] = providerResultToUnits(result, padStart, core);
                     providerCounts[result.provider] = (providerCounts[result.provider] || 0) + 1;
                     setTranscribeWorkerStatus(workerId, 'done', myIdx + 1, timeChunks.length);
-                    onLog(`Chunk ${myIdx + 1}/${timeChunks.length} ပြီးပါပြီ ✓ (${result.provider.toUpperCase()}, cue ${results[myIdx].length} ခု)`, 'ok');
+                    onLog(`Chunk ${myIdx + 1}/${timeChunks.length} ပြီးပါပြီ ✓ (${result.provider.toUpperCase()}, ${results[myIdx].words.length ? 'word ' + results[myIdx].words.length : 'segment ' + results[myIdx].segs.length} ခု)`, 'ok');
                     break;
                 } catch (e) {
                     if (transcribeAborted) return;
@@ -2949,7 +3358,7 @@ async function transcribeMediaWithWorkers(audioBuffer, chunkSizeSec, workerCount
                 }
             }
             if (!results[myIdx]) {
-                results[myIdx] = [];
+                results[myIdx] = emptyUnits();
                 setTranscribeWorkerStatus(workerId, 'error', myIdx + 1, timeChunks.length);
                 onLog(`Chunk ${myIdx + 1} (${formatTime(start)}–${formatTime(end)}) FAILED — ${MAX_CHUNK_ROUNDS} round ပြီးသည်အထိ မရပါ၊ SRT တွင် ဤအပိုင်း ကွက်လပ်ဖြစ်မည် (key/network စစ်ပြီး ထပ်လုပ်ပါ)`, 'err');
             }
@@ -2964,14 +3373,13 @@ async function transcribeMediaWithWorkers(audioBuffer, chunkSizeSec, workerCount
     for (let i = 0; i < effectiveWorkers; i++) workerPool.push(workerLoop(i));
     await Promise.all(workerPool);
 
-    const mergedSubs = [];
-    results.forEach(r => { if (r) mergedSubs.push(...r); });
+    const mergedSubs = assemblePhraseSubs(results, language, env, onLog);
     validateMergedSubs(mergedSubs, audioBuffer.duration, onLog);
 
     let finalSubs = mergedSubs;
     if (useWaveformSync && mergedSubs.length > 0) {
         onLog('Waveform sync: audio envelope ကို တွက်ချက်နေသည်...');
-        const envelope = computeSpeechEnvelope(audioBuffer, onLog);
+        const envelope = env || computeSpeechEnvelope(audioBuffer, onLog);
         finalSubs = refineCueTimingsWithEnvelope(mergedSubs, envelope, onLog);
     }
 
@@ -3566,6 +3974,35 @@ function computeSpeechEnvelope(audioBuffer, onLog) {
 
     return {
         hopSec, frameCount, duration: audioBuffer.duration, isSpeechAtFrame, frameAtTime,
+        rmsAt(f) { return (f >= 0 && f < frameCount) ? rms[f] : 0; },
+        // Cue start that sits at the END of the previous phrase: skips the short speech tail (≤0.45s,
+        // mostly the detector's own 300ms hang) and, if real silence of ≥0.8s follows before speech
+        // starts again inside [fromSec, toSec], returns that speech onset (else null).
+        staleLeadOnset(fromSec, toSec) {
+            const f0 = frameAtTime(fromSec), fEnd = frameAtTime(toSec);
+            let f = f0;
+            if (speech[f]) {
+                while (f <= fEnd && speech[f] && (f - f0) * hopSec <= 0.45) f++;
+                if (f > fEnd || speech[f]) return null;
+            }
+            let g = f;
+            while (g <= fEnd && !speech[g]) g++;
+            if (g > fEnd) return null;
+            return (g - f) * hopSec >= 0.8 ? g * hopSec : null;
+        },
+        // Walking backwards from fromSec to toSec: end of the last speech frame (null if none).
+        lastSpeechTime(fromSec, toSec) {
+            const f1 = frameAtTime(toSec);
+            for (let f = frameAtTime(fromSec); f >= f1; f--) if (speech[f]) return (f + 1) * hopSec;
+            return null;
+        },
+        // Share of frames in [aSec, bSec] that are speech (0..1).
+        speechRatio(aSec, bSec) {
+            const f0 = frameAtTime(aSec), f1 = Math.max(f0, frameAtTime(bSec));
+            let n = 0, c = 0;
+            for (let f = f0; f <= f1; f++) { n++; if (speech[f]) c++; }
+            return n ? c / n : 0;
+        },
         // Nearest transition INTO speech (silence→speech) within ±windowSec of tSec.
         // Searches outward from tSec frame-by-frame so the CLOSEST transition wins.
         nearestOnset(tSec, windowSec) {
@@ -3610,6 +4047,7 @@ function refineCueTimingsWithEnvelope(subs, envelope, onLog) {
     const CHARS_PER_SEC = 14;      // conservative reading speed (mixed EN/MY subtitle norms)
     const MIN_DUR_SEC = 1.0;
     const MAX_EXTEND_SEC = 6.0;    // cap on how far we'll stretch reading time out
+    const TRIM_LIMIT_SEC = 8.0;    // how far a cue start/end may be pulled in to skip swallowed silence
 
     const parsed = subs.map(s => {
         const parts = s.timeLine.split('-->').map(p => p.trim());
@@ -3634,13 +4072,24 @@ function refineCueTimingsWithEnvelope(subs, envelope, onLog) {
         const prevEnd = k > 0 ? parsed[order[k - 1]].end : null;
         const nextStart = k < order.length - 1 ? parsed[order[k + 1]].start : null;
 
+        // 0) Providers often start a cue where the PREVIOUS phrase ended, so a long pause gets
+        // swallowed by this cue (start far before the voice). If the envelope says the start lies in
+        // silence but speech begins later inside the cue, jump to that onset; same for a tail.
+        let s0 = cur.start, e0 = cur.end;
+        const staleOnset = envelope.staleLeadOnset(s0, Math.min(e0 - 0.2, s0 + TRIM_LIMIT_SEC));
+        if (staleOnset !== null && staleOnset > s0 + 0.2) s0 = staleOnset;
+        if (!envelope.isSpeechAtFrame(envelope.frameAtTime(e0))) {
+            const lastT = envelope.lastSpeechTime(e0, Math.max(s0 + 0.2, e0 - TRIM_LIMIT_SEC));
+            if (lastT !== null && lastT < e0 - 0.2) e0 = lastT;
+        }
+
         // 1) Snap start to the nearest real speech onset near the provider's start time.
-        const onset = envelope.nearestOnset(cur.start, SNAP_WINDOW_SEC);
-        let newStart = onset !== null ? onset : cur.start;
+        const onset = envelope.nearestOnset(s0, SNAP_WINDOW_SEC);
+        let newStart = onset !== null ? onset : s0;
 
         // 2) Snap end to the nearest real speech offset near the provider's end time.
-        const offset = envelope.nearestOffset(cur.end, SNAP_WINDOW_SEC);
-        let newEnd = offset !== null ? offset : cur.end;
+        const offset = envelope.nearestOffset(e0, SNAP_WINDOW_SEC);
+        let newEnd = offset !== null ? offset : e0;
 
         // Never let a snap invert or collapse the cue — fall back to the provider's own
         // numbers for this cue if that happens.
@@ -4810,22 +5259,33 @@ function refreshTranscribeDerived(previousCueCount) {
 // B8 + B9: cut chunks at the quietest point near each target boundary (±5s, never mid-speech
 // if a pause exists), merge a too-short last chunk into the previous one, and flag chunks
 // containing no speech at all so workers skip them. Falls back to fixed-length chunks on error.
-function buildSmartTimeChunks(audioBuffer, chunkSizeSec, onLog) {
+function buildSmartTimeChunks(audioBuffer, chunkSizeSec, onLog, envIn) {
     const total = audioBuffer.duration;
     const fixed = buildTimeChunks(total, chunkSizeSec);
     if (fixed.length <= 1) return fixed;
     try {
-        const env = computeSpeechEnvelope(audioBuffer, null);
+        const env = envIn || computeSpeechEnvelope(audioBuffer, null);
         const hop = env.hopSec;
-        const win = Math.min(5, chunkSizeSec * 0.2);
+        const win = Math.min(8, chunkSizeSec * 0.2);
         const cuts = [0];
         for (let t = chunkSizeSec; t < total - 5; t += chunkSizeSec) {
             const target = Math.max(t, cuts[cuts.length - 1] + chunkSizeSec * 0.5);
             let best = target, bestDist = Infinity;
+            let minE = Infinity, minC = null;
             for (let c = target - win; c <= target + win; c += hop) {
                 if (c <= cuts[cuts.length - 1] + 1 || c >= total - 1) continue;
-                if (!env.isSpeechAtFrame(env.frameAtTime(c)) && Math.abs(c - target) < bestDist) { best = c; bestDist = Math.abs(c - target); }
+                const f = env.frameAtTime(c);
+                if (!env.isSpeechAtFrame(f)) {
+                    if (Math.abs(c - target) < bestDist) { best = c; bestDist = Math.abs(c - target); }
+                } else if (bestDist === Infinity) {
+                    // no real pause found (yet): remember the quietest ~100ms stretch as a fallback cut
+                    let e = 0;
+                    for (let k = f - 2; k <= f + 2; k++) e += env.rmsAt(k);
+                    if (e < minE) { minE = e; minC = c; }
+                }
             }
+            // never hard-cut at the nominal time in the middle of a word if a quieter point exists
+            if (bestDist === Infinity && minC !== null) best = minC;
             cuts.push(best);
             t = best; // next target = best + chunkSizeSec (the loop adds chunkSizeSec)
         }
