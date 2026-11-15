@@ -2891,14 +2891,8 @@ function emptyUnits() { return { words: [], segs: [] }; }
 // segments whose centre lies outside it belong to the neighbouring chunk and are dropped.
 function providerResultToUnits(result, offsetSec, core) {
     const keep = (s, e) => { const m = (s + e) / 2; return m >= core.start && m < core.end; };
-    if ((result.words || []).length) {
-        const words = [];
-        result.words.forEach(w => {
-            const s = w.start + offsetSec, e = w.end + offsetSec;
-            if (keep(s, e)) words.push({ text: w.text, start: s, end: e });
-        });
-        return { words, segs: [] };
-    }
+
+    // Sentence-level segments (Groq / AssemblyAI / Gladia utterances, or Gladia's ready-made SRT).
     let rawSegs = result.segments || [];
     if (!rawSegs.length && result.srtDirect) {
         rawSegs = parseSrt(result.srtDirect).map(s => {
@@ -2908,13 +2902,71 @@ function providerResultToUnits(result, offsetSec, core) {
             return (a === null || b === null) ? null : { start: a / 1000, end: b / 1000, text: s.textLines.join(' ') };
         }).filter(Boolean);
     }
+    rawSegs = rawSegs.filter(s => (s.text || '').trim());
+
+    const rawWords = result.words || [];
+    // Providers sometimes return a word list that skips whole stretches (Whisper alignment drop-outs).
+    // Any segment whose words cover under half of its text is rebuilt from the segment instead, and
+    // the few stray words inside it are discarded so nothing is duplicated.
+    const lowSegs = rawWords.length ? rawSegs.filter(s => segmentUnderCovered(s, rawWords)) : rawSegs;
+    const inLow = (w) => rawWords.length && lowSegs.some(s => ((w.start + w.end) / 2) >= s.start && ((w.start + w.end) / 2) < s.end);
+
+    const words = [];
+    if (rawWords.length) {
+        rawWords.forEach(w => {
+            if (inLow(w)) return;
+            const s = w.start + offsetSec, e = w.end + offsetSec;
+            if (keep(s, e)) words.push({ text: w.text, start: s, end: e });
+        });
+    }
     const segs = [];
-    rawSegs.forEach(s => {
-        if (!(s.text || '').trim()) return;
+    lowSegs.forEach(s => {
         const a = s.start + offsetSec, b = s.end + offsetSec;
         if (keep(a, b)) segs.push({ start: a, end: b, text: s.text });
     });
-    return { words: [], segs };
+    return { words, segs };
+}
+
+// True when the provider's word list explains less than half of a segment's text.
+function segmentUnderCovered(seg, words) {
+    const text = String(seg.text || '');
+    const cjk = CJK_ANY_RE.test(text);
+    const expected = cjk ? lenOfText(text, 'cjk') : text.trim().split(/\s+/).filter(Boolean).length;
+    if (expected < 3) return false;
+    let got = 0;
+    words.forEach(w => {
+        const m = (w.start + w.end) / 2;
+        if (m >= seg.start && m < seg.end) got += cjk ? lenOfText(w.text, 'cjk') : 1;
+    });
+    return got < expected * 0.5;
+}
+
+// Dominant script of what the chunks returned: 'zh' | 'ja' | 'ko' | null (not clearly CJK).
+function detectDominantLanguageCode(results) {
+    let han = 0, kana = 0, hangul = 0, latin = 0;
+    results.forEach(r => {
+        if (!r) return;
+        const text = (r.words || []).map(w => w.text).join('') + (r.segs || []).map(s => s.text).join('');
+        han += (text.match(/[\u3400-\u4dbf\u4e00-\u9fff]/g) || []).length;
+        kana += (text.match(/[\u3040-\u30ff]/g) || []).length;
+        hangul += (text.match(/[\uac00-\ud7af]/g) || []).length;
+        latin += (text.match(/[A-Za-z]/g) || []).length;
+    });
+    const cjk = han + kana + hangul;
+    if (cjk < 50 || cjk < latin * 2) return null;
+    if (hangul > han) return 'ko';
+    if (kana > (han + kana) * 0.3) return 'ja';
+    return 'zh';
+}
+
+// A chunk whose result is clearly in the wrong language for this media (Whisper auto-detect picked
+// English for a quiet stretch: "I love it", "Go ahead") — or came back empty although it has speech.
+function chunkLooksOffLanguage(units, hasRealSpeech) {
+    const text = (units ? (units.words || []).map(w => w.text).join('') + (units.segs || []).map(s => s.text).join('') : '');
+    const cjkN = (text.match(/[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7af]/g) || []).length;
+    const latinN = (text.match(/[A-Za-z]/g) || []).length;
+    if (!text.trim()) return !!hasRealSpeech;
+    return latinN >= 3 && cjkN < latinN;
 }
 
 // All chunks' units → final subs [{timeLine,textLines}] (sorted, punctuation-free, one script).
@@ -2938,13 +2990,21 @@ function assemblePhraseSubs(results, language, envelope, onLog) {
     cues = mergeTinyCues(cues, mode);
 
     // Cues over (almost) pure silence are Whisper hallucinations (music / noise → "imp", "col", …).
+    // Real but quiet lines must survive, so only cues that ALSO look like garbage are dropped: no
+    // Han character at all, a repeat loop ("不不不不不不"), or a 1-2 character cue over true silence.
     let noSpeech = 0;
+    const isLoop = (t) => /^(.{1,3})\1{3,}$/.test(t.replace(/\s+/g, ''));
     if (envelope && envelope.speechRatio(0, envelope.duration) >= 0.05) {
         cues = cues.filter(c => {
-            if (envelope.speechRatio(c.start, c.end) < 0.10) { noSpeech++; return false; }
+            const ratio = envelope.speechRatio(c.start, c.end);
+            const flat = String(c.text || '');
+            const noHan = mode === 'cjk' && !/[\u3400-\u9fff]/.test(flat);
+            const tiny = lenOfText(flat, mode) <= 2;
+            if ((ratio < 0.10 && (noHan || isLoop(flat))) || (ratio < 0.02 && tiny)) { noSpeech++; return false; }
             return true;
         });
     }
+    cues = cues.filter(c => { if (mode === 'cjk' && isLoop(String(c.text || ''))) { noSpeech++; return false; } return true; });
 
     const subs = [];
     cues.forEach(c => {
@@ -3295,6 +3355,7 @@ async function transcribeMediaWithWorkers(audioBuffer, chunkSizeSec, workerCount
     const timeChunks = buildSmartTimeChunks(audioBuffer, chunkSizeSec, onLog, env);
     const results = new Array(timeChunks.length);
     const providerCounts = {};
+    const failedChunks = [];   // 1-based numbers of chunks that never succeeded (shown by CHECK COMPLETE)
 
     renderTranscribeWorkerGrid(Math.max(1, Math.min(workerCount, timeChunks.length || 1)));
     updateTranscribeChunkProgress(0, timeChunks.length);
@@ -3302,12 +3363,16 @@ async function transcribeMediaWithWorkers(audioBuffer, chunkSizeSec, workerCount
 
     let cursor = 0;
     let done = 0;
+    let queue = timeChunks.map((_, i) => i);   // chunk indices still to do in this pass
+    let chunkLanguage = language;              // pass 2 may lock this to the detected language
+    let roundLimit = MAX_CHUNK_ROUNDS;
 
     async function workerLoop(workerId) {
         while (true) {
             if (transcribeAborted) return;
-            const myIdx = cursor++;
-            if (myIdx >= timeChunks.length) return;
+            const qi = cursor++;
+            if (qi >= queue.length) return;
+            const myIdx = queue[qi];
             const { start, end } = timeChunks[myIdx];
             if (timeChunks[myIdx].silent) {
                 results[myIdx] = emptyUnits();
@@ -3337,13 +3402,13 @@ async function transcribeMediaWithWorkers(audioBuffer, chunkSizeSec, workerCount
                 chunkFile = new File([audioBufferToWavBlob(resampled)], `chunk_${myIdx + 1}.wav`, { type: 'audio/wav' });
             } catch (e) {
                 onLog(`Chunk ${myIdx + 1} audio encode မအောင်မြင်ပါ: ${e.message}`, 'err');
-                chunkRound = MAX_CHUNK_ROUNDS;
+                chunkRound = roundLimit;
             }
-            while (chunkRound < MAX_CHUNK_ROUNDS) {
+            while (chunkRound < roundLimit) {
                 if (transcribeAborted) return;
                 try {
                     if (transcribeAborted) return;
-                    const result = await transcribeChunkWithRotation(chunkFile, language, maxRetries, timeoutSec, onLog);
+                    const result = await transcribeChunkWithRotation(chunkFile, chunkLanguage, maxRetries, timeoutSec, onLog);
                     results[myIdx] = providerResultToUnits(result, padStart, core);
                     providerCounts[result.provider] = (providerCounts[result.provider] || 0) + 1;
                     setTranscribeWorkerStatus(workerId, 'done', myIdx + 1, timeChunks.length);
@@ -3353,11 +3418,12 @@ async function transcribeMediaWithWorkers(audioBuffer, chunkSizeSec, workerCount
                     if (transcribeAborted) return;
                     chunkRound++;
                     setTranscribeWorkerStatus(workerId, 'error', myIdx + 1, timeChunks.length);
-                    onLog(`Chunk ${myIdx + 1} error: ${e.message} — ပြန်ကြိုးစားနေသည် (round ${chunkRound}/${MAX_CHUNK_ROUNDS})...`, 'err');
+                    onLog(`Chunk ${myIdx + 1} error: ${e.message} — ပြန်ကြိုးစားနေသည် (round ${chunkRound}/${roundLimit})...`, 'err');
                     await sleep(retryBackoffMs(chunkRound));
                 }
             }
             if (!results[myIdx]) {
+                failedChunks.push(myIdx + 1);
                 results[myIdx] = emptyUnits();
                 setTranscribeWorkerStatus(workerId, 'error', myIdx + 1, timeChunks.length);
                 onLog(`Chunk ${myIdx + 1} (${formatTime(start)}–${formatTime(end)}) FAILED — ${MAX_CHUNK_ROUNDS} round ပြီးသည်အထိ မရပါ၊ SRT တွင် ဤအပိုင်း ကွက်လပ်ဖြစ်မည် (key/network စစ်ပြီး ထပ်လုပ်ပါ)`, 'err');
@@ -3373,7 +3439,34 @@ async function transcribeMediaWithWorkers(audioBuffer, chunkSizeSec, workerCount
     for (let i = 0; i < effectiveWorkers; i++) workerPool.push(workerLoop(i));
     await Promise.all(workerPool);
 
-    const mergedSubs = assemblePhraseSubs(results, language, env, onLog);
+    // Pass 2 (language lock). With Language = auto, Whisper decides the language PER CHUNK and a
+    // quiet / music-heavy chunk can come out as English hallucination ("I love it") while the real
+    // Chinese dialogue is lost. Once most chunks agree on a CJK language, chunks that came back in
+    // another language (or empty despite speech) are re-run once with that language forced.
+    if (language === 'auto' && !transcribeAborted) {
+        const lockLang = detectDominantLanguageCode(results);
+        if (lockLang) {
+            const redo = [];
+            timeChunks.forEach((c, i) => {
+                if (c.silent) return;
+                const hasSpeech = env ? env.speechRatio(c.start, c.end) >= 0.2 : true;
+                if (chunkLooksOffLanguage(results[i], hasSpeech)) redo.push(i);
+            });
+            if (redo.length) {
+                onLog(`Language lock: media အများစုက '${lockLang}' ဖြစ်နေပြီး chunk ${redo.length} ခုက ဘာသာစကားလွဲ/အလွတ် ထွက်နေသည် — '${lockLang}' ကို အတင်းသတ်မှတ်ပြီး ပြန် transcribe လုပ်မည် (chunk ${redo.map(i => i + 1).join(', ')})`, 'warn');
+                queue = redo; cursor = 0; done = timeChunks.length - redo.length;
+                chunkLanguage = lockLang; roundLimit = 2;
+                updateTranscribeChunkProgress(done, timeChunks.length);
+                const pool2 = [];
+                for (let i = 0; i < Math.max(1, Math.min(workerCount, redo.length)); i++) pool2.push(workerLoop(i));
+                await Promise.all(pool2);
+                // still foreign-language output in a CJK media = hallucination; drop it rather than keep "I love it"
+                redo.forEach(i => { if (chunkLooksOffLanguage(results[i], false)) results[i] = emptyUnits(); });
+            }
+        }
+    }
+
+    const mergedSubs = assemblePhraseSubs(results, language === 'auto' ? chunkLanguage : language, env, onLog);
     validateMergedSubs(mergedSubs, audioBuffer.duration, onLog);
 
     let finalSubs = mergedSubs;
@@ -3383,7 +3476,11 @@ async function transcribeMediaWithWorkers(audioBuffer, chunkSizeSec, workerCount
         finalSubs = refineCueTimingsWithEnvelope(mergedSubs, envelope, onLog);
     }
 
-    return { srt: finalSubs.length ? rebuildSrt(finalSubs) : '', providerCounts };
+    return {
+        srt: finalSubs.length ? rebuildSrt(finalSubs) : '',
+        providerCounts,
+        ctx: { env, timeChunks, failedChunks, chunkLanguage }
+    };
 }
 
 // =============================================================
@@ -3430,7 +3527,10 @@ async function handleTranscribeMedia() {
         const audioBuffer = await decodeMediaToAudioBuffer(selectedMediaFile);
         logTranscribe(`Decode ပြီးပါပြီ — Duration: ${formatTime(audioBuffer.duration)}`, 'ok');
 
-        const { srt, providerCounts } = await transcribeMediaWithWorkers(audioBuffer, chunkSizeSec, workerCount, language, maxRetries, timeoutSec, (msg, lvl) => logTranscribe(msg, lvl), useWaveformSync);
+        const { srt, providerCounts, ctx: runCtx } = await transcribeMediaWithWorkers(audioBuffer, chunkSizeSec, workerCount, language, maxRetries, timeoutSec, (msg, lvl) => logTranscribe(msg, lvl), useWaveformSync);
+        lastTranscribeCtx = runCtx ? Object.assign({}, runCtx, {
+            fileName: selectedMediaFile.name, duration: audioBuffer.duration, chunkSizeSec, workerCount, maxRetries, timeoutSec, useWaveformSync, retriedEmpty: []
+        }) : null;
 
         if (transcribeAborted) {
             logTranscribe('User မှ ရပ်တန့်လိုက်ပါသည်။', 'warn');
@@ -3451,6 +3551,19 @@ async function handleTranscribeMedia() {
         transcribeDoneBadge.classList.remove('hidden');
         transcribeStatusBadge.textContent = 'DONE';
         logTranscribe(`Transcription ပြီးဆုံးပါပြီ ✓ (${providerSummary})`, 'ok');
+
+        // B17: tell the user right away whether the output is complete.
+        try {
+            if (lastTranscribeCtx && lastTranscribeCtx.env && subsForText.length) {
+                const comp = analyzeTranscribeCompleteness(subsForText, lastTranscribeCtx.env, []);
+                renderCompletenessReport(comp, lastTranscribeCtx);
+                if (comp.missing.length || comp.bad.length || lastTranscribeCtx.failedChunks.length) {
+                    logTranscribe(`အပြည့်စုံမှု စစ်ချက်: အသံ ${comp.coveragePct.toFixed(1)}% ဖုံးထား — ပျောက်နေတဲ့ နေရာ ${comp.missing.length} ခု${comp.bad.length ? `၊ ဘာသာစကားလွဲ cue ${comp.bad.length} ခု` : ''} → RETRY MISSING နှိပ်ပါ`, 'warn');
+                } else {
+                    logTranscribe(`အပြည့်စုံမှု စစ်ချက်: ပြည့်စုံပါသည် ✓ (အသံ ${comp.coveragePct.toFixed(1)}% ဖုံးထား)`, 'ok');
+                }
+            }
+        } catch (e) { console.warn('completeness check failed:', e); }
 
     } catch (err) {
         console.error('Transcription Error:', err);
@@ -3494,6 +3607,330 @@ clearTranscribeBtn.addEventListener('click', () => {
 
 transcribeBtn.addEventListener('click', handleTranscribeMedia);
 stopTranscribeBtn.addEventListener('click', handleStopTranscribe);
+
+// =============================================================
+// B17 — CHECK COMPLETE + RETRY MISSING (TRANSCRIBE output)
+// =============================================================
+// CHECK COMPLETE compares the SRT with the real audio: every stretch where the audio has speech but no
+// cue covers it is listed as "missing". RETRY MISSING re-transcribes ONLY those stretches (plus any
+// wrong-language / loop garbage cues), merges the new cues in and checks again — press it as often as
+// needed. Stretches that were retried and still produced nothing (music / noise) are remembered and shown
+// separately so they don't keep counting as missing.
+let lastTranscribeCtx = null; // { fileName, duration, env, chunkLanguage, chunkSizeSec, workerCount, maxRetries, timeoutSec, useWaveformSync, failedChunks, retriedEmpty }
+let isRetryingMissing = false;
+const MISSING_MIN_SPEECH_SEC = 1.5; // a stretch needs at least this much speech to count as missing
+const COVER_MARGIN_SEC = 0.25;      // slack around each cue when deciding what it covers
+
+// ---- B17 PURE START ----
+function isLoopText(t) {
+    return /^(.{1,3})\1{3,}$/.test(String(t || '').replace(/\s+/g, ''));
+}
+
+function srtCueTimes(sub) {
+    const p = String(sub.timeLine || '').split('-->').map(x => x.trim());
+    const a = p.length === 2 ? parseSrtTimestampToMs(p[0]) : null;
+    const b = p.length === 2 ? parseSrtTimestampToMs(p[1]) : null;
+    return (a === null || b === null || b <= a) ? null : { start: a / 1000, end: b / 1000 };
+}
+
+// subs: parseSrt() output. env: computeSpeechEnvelope() result. retriedEmpty: [{start,end}] already retried.
+function analyzeTranscribeCompleteness(subs, env, retriedEmpty) {
+    const cues = [];
+    subs.forEach((s, idx) => {
+        const t = srtCueTimes(s);
+        if (t) cues.push({ idx, start: t.start, end: t.end, text: s.textLines.join(' ') });
+    });
+    const mode = detectCueMode(cues.map(c => c.text).join(''));
+    const isBad = (c) => isLoopText(c.text) || (mode === 'cjk' && !CJK_ANY_RE.test(c.text));
+    const good = cues.filter(c => !isBad(c));
+    const bad = cues.filter(isBad);
+
+    const hop = env.hopSec, n = env.frameCount;
+    const covered = new Uint8Array(n);
+    good.forEach(c => {
+        const f0 = Math.max(0, env.frameAtTime(c.start - COVER_MARGIN_SEC));
+        const f1 = Math.min(n - 1, env.frameAtTime(c.end + COVER_MARGIN_SEC));
+        for (let f = f0; f <= f1; f++) covered[f] = 1;
+    });
+
+    const MERGE_GAP = Math.round(1.0 / hop);
+    let speechFrames = 0, uncoveredFrames = 0;
+    const runs = [];
+    let run = null;
+    for (let f = 0; f < n; f++) {
+        if (!env.isSpeechAtFrame(f)) continue;
+        speechFrames++;
+        if (covered[f]) continue;
+        uncoveredFrames++;
+        if (run && f - run.lastF <= MERGE_GAP) { run.f1 = f; run.lastF = f; run.frames++; }
+        else { run = { f0: f, f1: f, lastF: f, frames: 1 }; runs.push(run); }
+    }
+    const ranges = runs
+        .filter(r => r.frames * hop >= MISSING_MIN_SPEECH_SEC)
+        .map(r => ({ start: r.f0 * hop, end: (r.f1 + 1) * hop, speechSec: r.frames * hop }));
+
+    const tried = retriedEmpty || [];
+    const wasTried = (r) => tried.some(t => Math.min(t.end, r.end) - Math.max(t.start, r.start) >= (r.end - r.start) * 0.5);
+    return {
+        cueCount: cues.length,
+        mode,
+        bad,
+        missing: ranges.filter(r => !wasTried(r)),
+        triedEmpty: ranges.filter(wasTried),
+        speechSec: speechFrames * hop,
+        coveragePct: speechFrames ? (1 - uncoveredFrames / speechFrames) * 100 : 100
+    };
+}
+
+// Missing ranges → API pieces: ranges closer than 3 s are joined, each is widened by 0.8 s, and anything
+// longer than maxPiece is cut into maxPiece-long pieces.
+function buildRetryPieces(missing, duration, maxPiece) {
+    const sorted = missing.map(r => ({ start: r.start, end: r.end })).sort((a, b) => a.start - b.start);
+    const merged = [];
+    sorted.forEach(r => {
+        const last = merged[merged.length - 1];
+        if (last && r.start - last.end < 3) last.end = Math.max(last.end, r.end);
+        else merged.push({ start: r.start, end: r.end });
+    });
+    const pieces = [];
+    merged.forEach(r => {
+        const a = Math.max(0, r.start - 0.8), b = Math.min(duration, r.end + 0.8);
+        for (let t = a; t < b - 0.05; t += maxPiece) pieces.push({ a: t, b: Math.min(b, t + maxPiece) });
+    });
+    return { merged, pieces };
+}
+
+// New cues that overlap an existing cue by more than 30 % of their own length are duplicates — drop them.
+function dropOverlappingCues(freshSubs, existingSubs) {
+    const ex = existingSubs.map(srtCueTimes).filter(Boolean);
+    return freshSubs.filter(s => {
+        const t = srtCueTimes(s);
+        if (!t) return false;
+        const dur = t.end - t.start;
+        return !ex.some(e => Math.min(e.end, t.end) - Math.max(e.start, t.start) > dur * 0.3);
+    });
+}
+// ---- B17 PURE END ----
+
+function renderCompletenessReport(res, ctx) {
+    const issues = [];
+    if (ctx && ctx.failedChunks && ctx.failedChunks.length) {
+        issues.push(`Chunk ${ctx.failedChunks.join(', ')} က provider error ကြောင့် မအောင်မြင်ခဲ့ပါ`);
+    }
+    if (res.bad.length) {
+        const sample = res.bad.slice(0, 3).map(c => `"${c.text.slice(0, 20)}"`).join(' ');
+        issues.push(`ဘာသာစကားလွဲ / loop cue ${res.bad.length} ခု ပါနေသည် (${sample}) — RETRY MISSING က ဖယ်ပြီး ပြန်ဖြည့်ပေးမည်`);
+    }
+    const SHOW = 40;
+    res.missing.slice(0, SHOW).forEach(r => {
+        issues.push(`${formatTime(r.start)} – ${formatTime(r.end)} (အသံ ${Math.max(1, Math.round(r.speechSec))}s) အသံရှိပြီး စာမပါ`);
+    });
+    if (res.missing.length > SHOW) issues.push(`... နောက်ထပ် ${res.missing.length - SHOW} နေရာ`);
+
+    const title = `COMPLETE CHECK — cue ${res.cueCount} ခု | အသံ ${Math.round(res.speechSec)}s ထဲက ${res.coveragePct.toFixed(1)}% ကို စာနဲ့ ဖုံးထားသည်`;
+    renderCheckResults(title, issues, 'ပြည့်စုံပါသည် — အသံရှိတဲ့ နေရာအားလုံး စာပါပြီ', transcribeCheckResultsBox);
+    if (res.triedEmpty.length) {
+        const line = document.createElement('div');
+        line.className = 'log-entry-warn';
+        line.textContent = `ပြန်ကြိုးစားပြီးသား စာမရတဲ့ နေရာ ${res.triedEmpty.length} ခု (BGM / အသံတိတ်ဖြစ်နိုင်): ` +
+            res.triedEmpty.slice(0, 6).map(r => formatTime(r.start)).join(', ') + (res.triedEmpty.length > 6 ? ' ...' : '');
+        transcribeCheckResultsBox.appendChild(line);
+    }
+}
+
+// The speech envelope of the media. Reused from the last run when it is the same file, else the media is
+// decoded again (16 kHz) and analysed.
+async function ensureCheckEnvelope() {
+    const sameFile = lastTranscribeCtx && lastTranscribeCtx.env && (!selectedMediaFile || lastTranscribeCtx.fileName === selectedMediaFile.name);
+    if (sameFile) return lastTranscribeCtx.env;
+    if (!selectedMediaFile) throw new Error('Media ဖိုင်ကို ရွေးထားရန် လိုပါသည် (အသံနဲ့ တိုက်စစ်ရမှာမို့)');
+    showCheckNotice('Media ကို decode လုပ်ပြီး အသံ envelope တွက်နေသည်...', transcribeCheckResultsBox);
+    const audioBuffer = await decodeMediaToAudioBuffer(selectedMediaFile);
+    const env = computeSpeechEnvelope(audioBuffer, null);
+    const keep = (lastTranscribeCtx && lastTranscribeCtx.fileName === selectedMediaFile.name) ? lastTranscribeCtx : {};
+    lastTranscribeCtx = Object.assign({ failedChunks: [], retriedEmpty: [] }, keep, { fileName: selectedMediaFile.name, duration: audioBuffer.duration, env });
+    return env;
+}
+
+async function handleCheckCompleteness() {
+    if (isTranscribing || isRetryingMissing) return;
+    if (!currentTranscribeResult || !currentTranscribeResult.srt) {
+        showCheckNotice('SRT output မရှိသေးပါ — အရင် TRANSCRIBE လုပ်ပါ', transcribeCheckResultsBox);
+        return;
+    }
+    const subs = parseSrt(currentTranscribeResult.srt);
+    if (subs.length === 0) { showCheckNotice('SRT ကို parse မရပါ', transcribeCheckResultsBox); return; }
+    try {
+        const env = await ensureCheckEnvelope();
+        renderCompletenessReport(analyzeTranscribeCompleteness(subs, env, lastTranscribeCtx && lastTranscribeCtx.retriedEmpty), lastTranscribeCtx);
+    } catch (e) {
+        showCheckNotice(`Check မလုပ်နိုင်ပါ: ${e.message}`, transcribeCheckResultsBox);
+    }
+}
+
+async function transcribeRangeToUnits(audioBuffer, a, b, lang, maxRetries, timeoutSec, onLog) {
+    const padStart = Math.max(0, a - CHUNK_PAD_SEC);
+    const padEnd = Math.min(audioBuffer.duration, b + CHUNK_PAD_SEC);
+    const sliceBuf = sliceAudioBuffer(audioBuffer, padStart, padEnd);
+    const resampled = await resampleTo16kMono(sliceBuf);
+    const file = new File([audioBufferToWavBlob(resampled)], `retry_${Math.round(a)}.wav`, { type: 'audio/wav' });
+    const result = await transcribeChunkWithRotation(file, lang, maxRetries, timeoutSec, onLog);
+    return providerResultToUnits(result, padStart, { start: a, end: b });
+}
+
+async function handleRetryMissing() {
+    if (isTranscribing || isRetryingMissing) return;
+    if (!currentTranscribeResult || !currentTranscribeResult.srt) {
+        showCheckNotice('SRT output မရှိသေးပါ — အရင် TRANSCRIBE လုပ်ပါ', transcribeCheckResultsBox);
+        return;
+    }
+    if (!selectedMediaFile) {
+        showCheckNotice('Media ဖိုင်ကို ပြန်ရွေးထားပါ — ပျောက်တဲ့ အပိုင်းကို အသံကနေ ပြန်ဖြတ်ယူရမှာမို့ လိုပါသည်', transcribeCheckResultsBox);
+        return;
+    }
+    if (getTranscribeCredentialPool().length === 0) {
+        showCheckNotice('Gladia/Groq/AssemblyAI API key မရှိပါ — Key Pool panel တွင် key ထည့်ပါ', transcribeCheckResultsBox);
+        return;
+    }
+
+    isRetryingMissing = true;
+    transcribeAborted = false;
+    const prevStatus = transcribeStatusBadge.textContent;
+    transcribeBtn.disabled = true;
+    geminiTranscribeBtn.disabled = true;
+    stopTranscribeBtn.disabled = false;
+    transcribeProgressPanel.classList.remove('hidden');
+    transcribeStatusBadge.textContent = 'RETRY';
+
+    try {
+        const env = await ensureCheckEnvelope();
+        const ctx = lastTranscribeCtx;
+        let subs = parseSrt(currentTranscribeResult.srt);
+        let res = analyzeTranscribeCompleteness(subs, env, ctx.retriedEmpty);
+
+        if (res.bad.length) {
+            logTranscribe(`ဘာသာစကားလွဲ / loop cue ${res.bad.length} ခုကို ဖယ်ပြီး အဲဒီနေရာတွေကိုပါ ပြန်ကြိုးစားမည်`, 'warn');
+            const badIdx = new Set(res.bad.map(c => c.idx));
+            subs = subs.filter((_, i) => !badIdx.has(i));
+            res = analyzeTranscribeCompleteness(subs, env, ctx.retriedEmpty);
+        }
+        if (!res.missing.length) {
+            logTranscribe('ပြန်လုပ်စရာ ပျောက်နေတဲ့ နေရာ မတွေ့တော့ပါ ✓', 'ok');
+            if (res.bad.length) applyRetrySubs(subs, '(+ cleanup)', ctx);
+            renderCompletenessReport(analyzeTranscribeCompleteness(subs, env, ctx.retriedEmpty), ctx);
+            return;
+        }
+
+        const duration = ctx.duration || env.duration;
+        const maxPiece = Math.max(20, ctx.chunkSizeSec || parseInt(transcribeChunkSizeInput.value, 10) || 60);
+        const { merged, pieces } = buildRetryPieces(res.missing, duration, maxPiece);
+        logTranscribe(`ပျောက်နေတဲ့ နေရာ ${merged.length} ခု (အသံ ${Math.round(res.missing.reduce((n, r) => n + r.speechSec, 0))}s) ကို ${pieces.length} ပိုင်းခွဲပြီး ပြန် transcribe လုပ်မည်...`);
+
+        let lang = (ctx.chunkLanguage && ctx.chunkLanguage !== 'auto') ? ctx.chunkLanguage : transcribeLangSelect.value;
+        if (lang === 'auto') {
+            const d = detectDominantLanguageCode([{ words: [], segs: [{ text: subs.map(s => s.textLines.join('')).join('') }] }]);
+            if (d) lang = d;
+        }
+        if (lang !== 'auto') logTranscribe(`ဘာသာစကားကို '${lang}' အဖြစ် သတ်မှတ်ပြီး လုပ်မည်`);
+
+        logTranscribe('Audio track ကို browser ထဲမှာ decode လုပ်နေသည်...');
+        const audioBuffer = await decodeMediaToAudioBuffer(selectedMediaFile);
+
+        const maxRetries = Math.max(parseInt(transcribeMaxRetriesInput.value, 10) || 2, 1);
+        const timeoutSec = Math.max(parseInt(transcribeTimeoutSecInput.value, 10) || 120, 10);
+        const workerCount = Math.max(parseInt(transcribeWorkerCountInput.value, 10) || 3, 1);
+        const results = new Array(pieces.length);
+        renderTranscribeWorkerGrid(Math.max(1, Math.min(workerCount, pieces.length)));
+        transcribeChunkProgressWrap.classList.remove('hidden');
+        updateTranscribeChunkProgress(0, pieces.length);
+
+        let cursor = 0, done = 0;
+        const workerLoop = async (workerId) => {
+            while (true) {
+                if (transcribeAborted) return;
+                const i = cursor++;
+                if (i >= pieces.length) return;
+                const p = pieces[i];
+                setTranscribeWorkerStatus(workerId, 'busy', i + 1, pieces.length);
+                let ok = false;
+                for (let round = 0; round < 3 && !ok; round++) {
+                    try {
+                        results[i] = await transcribeRangeToUnits(audioBuffer, p.a, p.b, lang, maxRetries, timeoutSec, (m, l) => logTranscribe(m, l));
+                        ok = true;
+                    } catch (e) {
+                        if (transcribeAborted) return;
+                        logTranscribe(`Retry ${formatTime(p.a)}–${formatTime(p.b)} error: ${e.message} (round ${round + 1}/3)`, 'err');
+                        await sleep(retryBackoffMs(round + 1));
+                    }
+                }
+                if (!ok) results[i] = emptyUnits();
+                setTranscribeWorkerStatus(workerId, ok ? 'done' : 'error', i + 1, pieces.length);
+                logTranscribe(`${formatTime(p.a)}–${formatTime(p.b)} ${ok ? 'ပြီးပါပြီ ✓' : 'မအောင်မြင်ပါ'}`, ok ? 'ok' : 'err');
+                done++;
+                updateTranscribeChunkProgress(done, pieces.length);
+            }
+        };
+        const pool = [];
+        for (let i = 0; i < Math.max(1, Math.min(workerCount, pieces.length)); i++) pool.push(workerLoop(i));
+        await Promise.all(pool);
+        if (transcribeAborted) { logTranscribe('User မှ ရပ်တန့်လိုက်ပါသည်။', 'warn'); return; }
+
+        const newSubs = dropOverlappingCues(assemblePhraseSubs(results, lang, env, (m, l) => logTranscribe(m, l)), subs);
+        const stillEmpty = merged.filter(r => !newSubs.some(ns => { const t = srtCueTimes(ns); return t && Math.min(t.end, r.end + 1) - Math.max(t.start, r.start - 1) > 0; }));
+        ctx.retriedEmpty = (ctx.retriedEmpty || []).filter(t => !merged.some(r => Math.min(t.end, r.end) > Math.max(t.start, r.start))).concat(stillEmpty);
+        logTranscribe(`ထပ်ရလာတဲ့ cue ${newSubs.length} ခု ဖြည့်ပြီး၊ စာမရတဲ့ နေရာ ${stillEmpty.length} ခု`, newSubs.length ? 'ok' : 'warn');
+
+        const finalSubs = subs.concat(newSubs);
+        validateMergedSubs(finalSubs, duration, (m, l) => logTranscribe(m, l));
+        const syncOn = transcribeWaveformSyncToggle ? transcribeWaveformSyncToggle.checked : true;
+        const out = (syncOn && finalSubs.length) ? refineCueTimingsWithEnvelope(finalSubs, env, (m, l) => logTranscribe(m, l)) : finalSubs;
+        applyRetrySubs(out, '(+ missing retry)', ctx);
+        renderCompletenessReport(analyzeTranscribeCompleteness(out, env, ctx.retriedEmpty), ctx);
+    } catch (e) {
+        console.error('Retry missing error:', e);
+        logTranscribe(`RETRY FAILED: ${e.message}`, 'err');
+    } finally {
+        isRetryingMissing = false;
+        transcribeBtn.disabled = false;
+        geminiTranscribeBtn.disabled = false;
+        stopTranscribeBtn.disabled = true;
+        transcribeStatusBadge.textContent = (prevStatus && prevStatus !== 'RETRY') ? prevStatus : 'DONE';
+    }
+}
+
+// Writes a merged / cleaned sub list back into the transcribe result and refreshes the output box.
+function applyRetrySubs(subs, noteSuffix, ctx) {
+    currentTranscribeResult.srt = rebuildSrt(subs);
+    currentTranscribeResult.fullText = subs.map(s => s.textLines.join(' ')).join('\n');
+    try {
+        const j = JSON.parse(currentTranscribeResult.jsonStr);
+        j.cues = subs.length;
+        j.note = String(j.note || '').replace(/ \(\+ (?:missing retry|cleanup)\)$/, '') + ' ' + noteSuffix;
+        currentTranscribeResult.jsonStr = JSON.stringify(j, null, 2);
+    } catch (e) { /* jsonStr wasn't JSON — leave it */ }
+    renderTranscribeOutput();
+    transcribeOutputMeta.textContent = `Provider: ${currentTranscribeResult.provider || 'N/A'} (chunked + retry) | Segments: ${subs.length} | Characters: ${currentTranscribeResult.fullText.length}`;
+}
+
+(function installCompletenessButtons() {
+    try {
+        const base = checkTranscribeTimestampsBtn;
+        const mk = (id, html, title) => {
+            const b = document.createElement('button');
+            b.id = id; b.type = 'button'; b.className = base.className; b.innerHTML = html; b.title = title;
+            return b;
+        };
+        const checkBtn = mk('checkTranscribeCompleteBtn', '<i class="fa-solid fa-list-check mr-1"></i> CHECK COMPLETE', 'အသံနဲ့ တိုက်စစ်ပြီး စာမပါတဲ့ နေရာတွေ ရှိမရှိ စစ်ဆေးမည်');
+        const retryBtn = mk('retryTranscribeMissingBtn', '<i class="fa-solid fa-rotate-right mr-1"></i> RETRY MISSING', 'ပျောက်နေတဲ့ နေရာတွေကိုပဲ ပြန် transcribe လုပ်ပြီး ဖြည့်မည် (အကြိမ်ကြိမ် နှိပ်လို့ရသည်)');
+        base.insertAdjacentElement('afterend', retryBtn);
+        base.insertAdjacentElement('afterend', checkBtn);
+        checkBtn.addEventListener('click', handleCheckCompleteness);
+        retryBtn.addEventListener('click', handleRetryMissing);
+        clearTranscribeBtn.addEventListener('click', () => { lastTranscribeCtx = null; });
+    } catch (e) {
+        console.warn('CHECK COMPLETE / RETRY MISSING buttons could not be installed:', e);
+    }
+})();
 
 // =============================================================
 // Output format switcher (SRT / TXT / JSON) + Copy / Download
@@ -4354,6 +4791,7 @@ async function handleGeminiTranscribe() {
         };
 
         renderTranscribeOutput();
+        if (lastTranscribeCtx) { lastTranscribeCtx.retriedEmpty = []; lastTranscribeCtx.failedChunks = []; }
         transcribeOutputMeta.textContent = `Provider: GEMINI (direct) | Segments: ${subsForText.length} | Characters: ${currentTranscribeResult.fullText.length}`;
         transcribeDoneBadge.classList.remove('hidden');
         transcribeStatusBadge.textContent = 'DONE';
