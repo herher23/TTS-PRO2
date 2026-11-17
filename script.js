@@ -1512,7 +1512,7 @@ If an item is already good, return it EXACTLY unchanged. Keep the same length st
         const prompt = `You are a careful proofreader for ${targetLang} subtitles.
 For each item, compare "translation" with "source" and return the corrected translation.
 ${fixRules}${pronounRule ? '\nPronouns: ' + pronounRule : ''}
-Return a JSON array of strings with exactly ${items.length} items in the same order. No notes.${isMyanmar ? '\nNever use the marks "။" "၊" "!" "?".' : ''}
+Return a JSON array of strings with exactly ${items.length} items in the same order. No notes.
 ${glossNames ? `Glossary (keep these forms): ${glossNames}\n` : ''}${contextMemory ? `Global context from the user (story / tone / characters — keep the translation consistent with it):\n${contextMemory}\n` : ''}${custom ? `User instructions:\n${custom}\n` : ''}${neighbourBlock}
 Items:
 ${JSON.stringify(items)}`;
@@ -1521,7 +1521,6 @@ ${JSON.stringify(items)}`;
             if (!Array.isArray(out) || out.length !== chunk.length) { logTrans(`Proofread chunk ${ci + 1}: item အရေအတွက် မကိုက်ပါ — ကျော်ခဲ့သည်`, 'warn'); continue; }
             out.forEach((t, i) => {
                 let fixed = String(t).trim();
-                if (isMyanmar) fixed = sanitizeMyanmarPunctuation(fixed);
                 if (fixed && fixed !== chunk[i].translatedText) { chunk[i].translatedText = fixed; changed++; }
             });
             logTrans(`Proofread ${ci + 1}/${chunks.length} ✓`, 'ok');
@@ -1560,9 +1559,6 @@ function buildTranslationPrompt(lines, targetLang, context) {
 
     const myanmarRules = isMyanmar ? `
 - Language precision: translate the meaning accurately for ${targetLang}, based on the actual context of the source line (not a literal word-for-word conversion).
-- Strict punctuation restriction: NEVER use the Myanmar sentence-punctuation marks "။" or "၊" anywhere in the output.
-- Also NEVER use the Western exclamation mark "!" or question mark "?" anywhere in the output.
-- Write clean subtitle-style Burmese sentences without any of the punctuation marks listed above.
 - Natural spoken Burmese: write the way a native Burmese subtitler would for a drama / anime, so it reads smoothly at a glance. Re-express the idea in the way Burmese speakers actually say it instead of converting each English word one by one (avoid literal calques).
 - Use spoken endings (တယ်၊ ပြီ၊ နေပြီ၊ ပါပဲ) rather than formal written endings (သည်၊ ၏). Keep lines short.
 - Use ONE intensifier per phrase at most (အတော်လေး / တော်တော် / အရမ်း). NEVER stack two intensifiers for a single "very" (for example do not write "တကယ့်ကို အလွန်အမင်း").
@@ -1583,12 +1579,43 @@ Subtitle lines to translate:
 ${numbered}`;
 }
 
-// Safety net: even with the prompt rule above, a model can occasionally slip in a
-// punctuation mark. When translating into Myanmar, strip "။" "၊" "!" "?" from the
-// result and tidy up any double-spacing left behind.
+// Removes "။" "၊" "!" "?" and tidies the double-spacing left behind. It is NOT applied while translating —
+// only the STRIP button (after the Burmese translation is finished) calls it.
 function sanitizeMyanmarPunctuation(text) {
     return text.replace(/[။၊!?]/g, '').replace(/[ \t]{2,}/g, ' ').trim();
 }
+
+// ---- STRIP button: remove ။ ၊ ! ? AFTER the Burmese translation is done ----
+const stripMyanmarPunctBtn = document.getElementById('stripMyanmarPunctBtn');
+
+// Removes ။ ၊ ! ? from an ALREADY translated Burmese output (cue text only — numbers and timestamps are
+// never touched). Translation itself is unchanged; the user presses this only when they want it.
+if (stripMyanmarPunctBtn) stripMyanmarPunctBtn.addEventListener('click', () => {
+    if (isTranslating) { showCheckNotice('ဘာသာပြန်နေဆဲ ဖြစ်သည် — ပြီးမှ နှိပ်ပါ'); return; }
+    if (!lastTranslatedSubs || lastTranslatedSubs.length === 0) {
+        showCheckNotice('ဘာသာပြန်ပြီး output မရှိသေးပါ — အရင် Translate လုပ်ပါ');
+        return;
+    }
+    if (!lastTranslatedSubs.some(s => /[\u1000-\u109F]/.test(String(s.translatedText || '')))) {
+        showCheckNotice('မြန်မာဘာသာပြန်ထားတဲ့ output မဟုတ်ပါ — ဒီခလုတ်က မြန်မာစာအတွက်သာ ဖြစ်သည်');
+        return;
+    }
+    let changedCues = 0, removedMarks = 0;
+    lastTranslatedSubs.forEach(s => {
+        const before = String(s.translatedText || '');
+        if (!before) return;
+        const after = sanitizeMyanmarPunctuation(before);
+        if (!after || after === before) return; // never blank a cue
+        removedMarks += (before.match(/[။၊!?]/g) || []).length;
+        s.translatedText = after;
+        changedCues++;
+    });
+    const outputSrt = rebuildSrt(lastTranslatedSubs, { preserveIndex: true });
+    srtOutput.value = outputSrt;
+    srtOutputMeta.textContent = `Subtitles: ${lastTranslatedSubs.length} | Characters: ${outputSrt.length}`;
+    renderCheckResults('PUNCTUATION — ။ ၊ ! ? ဖယ်ရှားခြင်း', [],
+        changedCues ? `cue ${changedCues} ခုထဲက ပုဒ်ဖြတ် ${removedMarks} ခု ဖယ်ပြီးပါပြီ` : 'ဖယ်စရာ ပုဒ်ဖြတ် မတွေ့ပါ');
+});
 
 function extractJsonArray(raw) {
     let cleaned = raw.trim();
@@ -1661,7 +1688,6 @@ async function translateChunkWithRetry(chunk, targetLang, maxRetries, timeoutSec
 
             return arr.map(t => {
                 let out = applyGlossary(String(t));
-                if (targetLang === 'Myanmar (Burmese)') out = sanitizeMyanmarPunctuation(out);
                 return out;
             });
 
