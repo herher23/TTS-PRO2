@@ -1534,6 +1534,9 @@ ${JSON.stringify(items)}`;
 // Number of source lines shown before / after each chunk as READ-ONLY context for the model.
 // They are never part of the "to translate" list, so cue counts / numbers / timestamps are unaffected.
 const TRANSLATE_CONTEXT_LINES = 5;
+// Extra instruction for ONE retry run (set by the RETRY button, cleared afterwards): names the exact Latin words
+// that were left behind so the model rewrites them in Burmese script.
+let translateExtraRule = '';
 
 function buildTranslationPrompt(lines, targetLang, context) {
     const numbered = lines.map((l, i) => `${i + 1}. ${l.replace(/\n/g, ' / ')}`).join('\n');
@@ -1559,6 +1562,7 @@ function buildTranslationPrompt(lines, targetLang, context) {
 
     const myanmarRules = isMyanmar ? `
 - Language precision: translate the meaning accurately for ${targetLang}, based on the actual context of the source line (not a literal word-for-word conversion).
+- No romanised words: never leave Chinese / pinyin / English-letter words in the output. Write every person name, place, organisation and cultivation / fantasy term in Burmese script (transliterate by sound when there is no Burmese equivalent) and spell the same name the same way in every line. Only universal acronyms such as OK or TV may stay in Latin letters.${translateExtraRule ? '\n- ' + translateExtraRule : ''}
 - Natural spoken Burmese: write the way a native Burmese subtitler would for a drama / anime, so it reads smoothly at a glance. Re-express the idea in the way Burmese speakers actually say it instead of converting each English word one by one (avoid literal calques).
 - Use spoken endings (တယ်၊ ပြီ၊ နေပြီ၊ ပါပဲ) rather than formal written endings (သည်၊ ၏). Keep lines short.
 - Use ONE intensifier per phrase at most (အတော်လေး / တော်တော် / အရမ်း). NEVER stack two intensifiers for a single "very" (for example do not write "တကယ့်ကို အလွန်အမင်း").
@@ -1615,6 +1619,31 @@ if (stripMyanmarPunctBtn) stripMyanmarPunctBtn.addEventListener('click', () => {
     srtOutputMeta.textContent = `Subtitles: ${lastTranslatedSubs.length} | Characters: ${outputSrt.length}`;
     renderCheckResults('PUNCTUATION — ။ ၊ ! ? ဖယ်ရှားခြင်း', [],
         changedCues ? `cue ${changedCues} ခုထဲက ပုဒ်ဖြတ် ${removedMarks} ခု ဖယ်ပြီးပါပြီ` : 'ဖယ်စရာ ပုဒ်ဖြတ် မတွေ့ပါ');
+});
+
+// ---- GLOSSARY ပြန်သုံး: apply the Glossary to an ALREADY translated output ----
+// Deterministic fix for names the model left in Latin letters: add  Luo Wang → (your Burmese spelling)  to the
+// Glossary, press this, and every occurrence in the output is replaced — no API call, same spelling everywhere.
+const applyGlossaryOutputBtn = document.getElementById('applyGlossaryOutputBtn');
+if (applyGlossaryOutputBtn) applyGlossaryOutputBtn.addEventListener('click', () => {
+    if (isTranslating) { showCheckNotice('ဘာသာပြန်နေဆဲ ဖြစ်သည် — ပြီးမှ နှိပ်ပါ'); return; }
+    if (!lastTranslatedSubs || lastTranslatedSubs.length === 0) {
+        showCheckNotice('ဘာသာပြန်ပြီး output မရှိသေးပါ — အရင် Translate လုပ်ပါ');
+        return;
+    }
+    if (!isGlossaryEnabled()) { showCheckNotice('Glossary ကို ပိတ်ထားသည် — အရင် ဖွင့်ပါ'); return; }
+    if (getGlossary().filter(g => g.term).length === 0) { showCheckNotice('Glossary ဗလာဖြစ်နေသည် — term / replacement အရင်ထည့်ပါ'); return; }
+    let changed = 0;
+    lastTranslatedSubs.forEach(s => {
+        const before = (s.translatedText !== undefined && s.translatedText !== null) ? String(s.translatedText) : '';
+        if (!before) return;
+        const after = applyGlossary(before);
+        if (after !== before) { s.translatedText = after; changed++; }
+    });
+    const outputSrt = rebuildSrt(lastTranslatedSubs, { preserveIndex: true });
+    srtOutput.value = outputSrt;
+    srtOutputMeta.textContent = `Subtitles: ${lastTranslatedSubs.length} | Characters: ${outputSrt.length}`;
+    renderCheckResults('GLOSSARY ပြန်သုံးခြင်း', [], changed ? `cue ${changed} ခုကို Glossary အတိုင်း ပြင်ပြီးပါပြီ` : 'ပြင်စရာ မတွေ့ပါ (Glossary term တွေ output ထဲ မပါပါ)');
 });
 
 function extractJsonArray(raw) {
@@ -1957,6 +1986,21 @@ function checkSrtTimestamps(subs, mediaDurationSec = null) {
 // Flags any line still sitting on its original (untranslated) text — either because
 // translateSrtWithWorkers marked its chunk as still-failed after all recovery passes,
 // or because the translated text happens to be identical to the source text.
+// Latin words left inside a Burmese translation of a Chinese / Japanese / Korean cue = romanised (pinyin / romaji)
+// names or terms that were never turned into Burmese script ("Luo Wang", "Xiantian"). Universal acronyms and
+// anything the user's own Glossary deliberately writes in Latin letters are not counted.
+const LATIN_OK_RE = /^(?:OK|TV|ID|VIP|DNA|CEO|PK|AI|UFO|CD|DJ|GPS|SMS|USB|WiFi|VS|NPC|BOSS|APP|SOS|VR)$/i;
+function latinLeftoverTerms(sub) {
+    const source = sub.textLines.join(' ');
+    if (!/[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af]/.test(source)) return [];
+    const translated = (sub.translatedText !== undefined && sub.translatedText !== null) ? String(sub.translatedText) : '';
+    if (!/[\u1000-\u109F]/.test(translated)) return [];
+    const glossaryLatin = new Set();
+    getGlossary().forEach(g => (String(g.replacement || '').match(/[A-Za-z][A-Za-z'’-]*[A-Za-z]/g) || []).forEach(w => glossaryLatin.add(w.toLowerCase())));
+    const phrases = translated.match(/[A-Za-z][A-Za-z'’-]*[A-Za-z](?: [A-Za-z][A-Za-z'’-]*[A-Za-z])*/g) || [];
+    return phrases.filter(p => !p.split(' ').every(w => LATIN_OK_RE.test(w) || glossaryLatin.has(w.toLowerCase())));
+}
+
 function checkUntranslatedLines(subs) {
     const issues = [];
     subs.forEach((s, i) => {
@@ -1967,6 +2011,18 @@ function checkUntranslatedLines(subs) {
             issues.push(`#${s.originalIndex || (i + 1)} [${s.timeLine.split('-->')[0].trim()}]: "${preview}"`);
         }
     });
+    // Romanised names left in Latin letters (e.g. "Luo Wang") — listed per cue, then summed up per term.
+    const termCount = new Map();
+    subs.forEach((s, i) => {
+        const terms = latinLeftoverTerms(s);
+        if (!terms.length) return;
+        terms.forEach(t => termCount.set(t, (termCount.get(t) || 0) + 1));
+        const src = s.textLines.join(' ');
+        issues.push(`#${s.originalIndex || (i + 1)} [${s.timeLine.split('-->')[0].trim()}]: Latin စာလုံးကျန် "${terms.join(', ')}" ← "${src.length > 40 ? src.slice(0, 40) + '…' : src}"`);
+    });
+    if (termCount.size) {
+        issues.push(`မြန်မာစာ မပြောင်းရသေးတဲ့ Latin စာလုံး: ${[...termCount].map(([t, n]) => `${t} ×${n}`).join(' | ')} — Glossary ထဲ ထည့်ပြီး "GLOSSARY ပြန်သုံး" နှိပ်ပါ (ဒါမှမဟုတ် RETRY နှိပ်ပါ)`);
+    }
     return issues;
 }
 
@@ -1976,7 +2032,7 @@ function findUntranslatedSubs(subs) {
     return subs.filter(s => {
         const original = s.textLines.join('\n').trim();
         const translated = (s.translatedText !== undefined && s.translatedText !== null) ? String(s.translatedText).trim() : '';
-        return s.translationFailed || (translated && translated === original);
+        return s.translationFailed || (translated && translated === original) || latinLeftoverTerms(s).length > 0;
     });
 }
 
@@ -2076,7 +2132,16 @@ retryUntranslatedBtn.addEventListener('click', async () => {
     logTrans(`ဘာသာမပြန်ရသေးသော cue ${failedSubs.length} ခုကို ပြန်ကြိုးစားနေသည်...`, 'warn');
 
     try {
-        await translateSrtWithWorkers(failedSubs, chunkSize, targetLang, workerCount, maxRetries, timeoutSec, lastTranslatedSubs);
+        const leftoverTerms = [...new Set(failedSubs.flatMap(latinLeftoverTerms))];
+        translateExtraRule = leftoverTerms.length
+            ? `These words were left in Latin letters in the previous attempt: ${leftoverTerms.map(t => `"${t}"`).join(', ')}. Write each of them in Burmese script (by sound), never in Latin letters, and keep one spelling for each.`
+            : '';
+        if (leftoverTerms.length) logTrans(`Latin စာလုံး ${leftoverTerms.join(', ')} ကို မြန်မာစာနဲ့ ပြန်ရေးခိုင်းမည်`, 'warn');
+        try {
+            await translateSrtWithWorkers(failedSubs, chunkSize, targetLang, workerCount, maxRetries, timeoutSec, lastTranslatedSubs);
+        } finally {
+            translateExtraRule = '';
+        }
 
         const outputSrt = rebuildSrt(lastTranslatedSubs, { preserveIndex: true });
         srtOutput.value = outputSrt;
