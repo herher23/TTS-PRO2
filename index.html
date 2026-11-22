@@ -551,6 +551,9 @@
                     <label class="flex items-center gap-2 font-mono text-[10px] text-pink-300" title="မြန်မာဘာသာပြန်ကို စကားပြောပုံစံ သဘာဝကျအောင် ပြန်ရေးပါမည် (အဓိပ္ပာယ် မပြောင်းပါ)">
                         <input type="checkbox" id="proofreadNaturalChk" checked class="accent-pink-400"> NATURAL POLISH (သဘာဝကျအောင် ပြန်ရေး — ပြင်း)
                     </label>
+                    <label class="flex items-center gap-2 font-mono text-[10px] text-cyan-300" title="မြန်မာဘာသာပြန်တဲ့အခါ cue တစ်ခုချင်းစီကို စက္ကန့်ကို အက္ခရာ ဘယ်နှစ်လုံးထက် မပိုစေဘဲ တိုတိုလေး ပြန်ရေးခိုင်းမည်။ 0 = ပိတ်။ မြန်မာဘာသာပြန်တဲ့အခါမှသာ အလုပ်လုပ်သည်။">
+                        READING BUDGET <input type="number" id="translateReadingBudget" value="13" min="0" max="25" class="w-14 p-1 rounded bg-black/60 border border-cyan-500/30 text-cyan-100 font-mono text-xs focus:outline-none focus:border-cyan-300"> အက္ခရာ/စက္ကန့် (0 = ပိတ်)
+                    </label>
                     <span id="customPromptStatus" class="font-mono text-xs text-emerald-400"></span>
                 </div>
             </div>
@@ -663,6 +666,9 @@
                     </button>
                     <button id="stripMyanmarPunctBtn" title="မြန်မာဘာသာပြန်ပြီးမှ နှိပ်ပါ — output ထဲက ။ ၊ ! ? ကို ဖယ်မည် (cue စာသားသာ၊ timestamp မထိပါ)" class="px-3 py-1.5 rounded-lg bg-black/50 border border-cyan-500/40 text-cyan-300 font-mono text-xs hover:border-cyan-300 transition-all flex items-center gap-1.5">
                         <i class="fa-solid fa-eraser"></i> ။ ၊ ! ? ဖယ်ရန် (STRIP)
+                    </button>
+                    <button id="fixReadingSpeedBtn" title="ဖတ်ရှုနှုန်းမြန်တဲ့ cue တွေကို နောက် cue နဲ့ ကြားထဲက အလွတ်အချိန်ကို သုံးပြီး ပိုကြာအောင် တိုးပေးမည် (cue စတဲ့အချိန် မပြောင်းပါ၊ API မခေါ်ပါ)" class="px-3 py-1.5 rounded-lg bg-black/50 border border-pink-500/40 text-pink-300 font-mono text-xs hover:border-pink-300 transition-all flex items-center gap-1.5">
+                        <i class="fa-solid fa-gauge-high"></i> READING SPEED FIX
                     </button>
                     <button id="applyGlossaryOutputBtn" title="Glossary ထဲက term → replacement ကို ဘာသာပြန်ပြီးသား output ပေါ် အခုသုံးမည် (API မခေါ်ပါ)" class="px-3 py-1.5 rounded-lg bg-black/50 border border-emerald-500/40 text-emerald-300 font-mono text-xs hover:border-emerald-300 transition-all flex items-center gap-1.5">
                         <i class="fa-solid fa-book"></i> GLOSSARY ပြန်သုံးရန်

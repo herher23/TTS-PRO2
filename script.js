@@ -1560,6 +1560,12 @@ function buildTranslationPrompt(lines, targetLang, context) {
           (after.length ? `Next lines (just after the last line to translate):\n${fmtCtx(after, i => `[+${i + 1}]`)}\n` : '')
         : '';
 
+    // Reading-speed budget: per-line maximum length (Burmese characters) derived from how long each cue stays on screen.
+    const budgets = (isMyanmar && context && Array.isArray(context.budgets) && context.budgets.length === lines.length) ? context.budgets : null;
+    const budgetBlock = budgets
+        ? `\nReading-speed budget — the MAXIMUM length of each translated line, counted in visible Burmese characters (a consonant with its vowel signs / tone marks counts as one; a space counts as one), in the same order as the numbered lines:\n${budgets.map((b, i) => `${i + 1}: ${b}`).join(', ')}\nA subtitle must be readable in the time it is on screen, so condense each line to fit its budget: drop filler particles, repeated pronouns and softeners, shorten polite endings, keep only the key meaning and tone. Never exceed a budget by more than about 10%. Do not drop names or important facts.\n`
+        : '';
+
     const myanmarRules = isMyanmar ? `
 - Language precision: translate the meaning accurately for ${targetLang}, based on the actual context of the source line (not a literal word-for-word conversion).
 - No romanised words: never leave Chinese / pinyin / English-letter words in the output. Write every person name, place, organisation and cultivation / fantasy term in Burmese script (transliterate by sound when there is no Burmese equivalent) and spell the same name the same way in every line. Only universal acronyms such as OK or TV may stay in Latin letters.${translateExtraRule ? '\n- ' + translateExtraRule : ''}
@@ -1578,7 +1584,7 @@ Rules:
 - Do not add explanations, notes, or the original text — only the translation.
 - Line length: only break a translated line in two when it is genuinely too long to read comfortably at a glance (roughly beyond ~42 characters, adjusted naturally for the target script's visual width) — a short or already-readable line must stay on a single line, do not wrap it unnecessarily. When a break is needed, insert a single literal "\\n" at a natural phrase boundary inside that same JSON string — never more than 2 lines total, and never as a separate array item. This only reflows text within the cue's existing timestamp block; it must never change the timing or the cue number.
 - Output ONLY a JSON array of strings (one translated string per input line) — plain subtitle text with no numbering, no timestamps, and no markdown, ready to be dropped straight into a professional .srt file.${myanmarRules}
-${contextBlock}${customBlock}${surroundingBlock}
+${contextBlock}${customBlock}${surroundingBlock}${budgetBlock}
 Subtitle lines to translate:
 ${numbered}`;
 }
@@ -1646,6 +1652,101 @@ if (applyGlossaryOutputBtn) applyGlossaryOutputBtn.addEventListener('click', () 
     renderCheckResults('GLOSSARY ပြန်သုံးခြင်း', [], changed ? `cue ${changed} ခုကို Glossary အတိုင်း ပြင်ပြီးပါပြီ` : 'ပြင်စရာ မတွေ့ပါ (Glossary term တွေ output ထဲ မပါပါ)');
 });
 
+// ---- Reading speed: budget in the translation prompt + READING SPEED FIX button ----
+// Burmese needs about twice as many characters as the Chinese line it translates, but the cue keeps the
+// Chinese timing — so a typical file ends up around 14 characters/second, too fast to read comfortably.
+// Two tools: (1) a per-line character BUDGET sent with the translate prompt so the model condenses the wording,
+// (2) READING SPEED FIX, which uses the free gap after each cue to give fast cues more reading time (timing only).
+const LS_READING_BUDGET = 'neoyangon_reading_budget';
+const translateReadingBudgetInput = document.getElementById('translateReadingBudget');
+const fixReadingSpeedBtn = document.getElementById('fixReadingSpeedBtn');
+if (translateReadingBudgetInput) {
+    const saved = safeLsGet(LS_READING_BUDGET);
+    if (saved !== null && saved !== '' && !isNaN(parseInt(saved, 10))) translateReadingBudgetInput.value = parseInt(saved, 10);
+    translateReadingBudgetInput.addEventListener('change', () => safeLsSet(LS_READING_BUDGET, String(getReadingBudgetCps())));
+}
+// Target characters per second for Burmese output; 0 = budget switched off.
+function getReadingBudgetCps() {
+    if (!translateReadingBudgetInput) return 13;
+    const v = parseInt(translateReadingBudgetInput.value, 10);
+    if (isNaN(v)) return 13;
+    return v <= 0 ? 0 : Math.min(25, Math.max(8, v));
+}
+// Max characters per cue = (time the cue can stay on screen) × cps. A cue may use the free gap after it (up to +1 s).
+function computeReadingBudgets(chunk, cps) {
+    const times = chunk.map(s => srtCueTimes(s));
+    return chunk.map((s, i) => {
+        const t = times[i];
+        if (!t) return Math.max(10, Math.round(cps));
+        const dur = t.end - t.start;
+        const next = times[i + 1];
+        const avail = next ? Math.max(dur, Math.min(next.start - 0.08 - t.start, dur + 1.0)) : dur;
+        return Math.max(10, Math.round(avail * cps));
+    });
+}
+function readingSpeedRows(subs) {
+    const rows = [];
+    subs.forEach((s, i) => {
+        const t = srtCueTimes(s);
+        const text = (s.translatedText !== undefined && s.translatedText !== null) ? String(s.translatedText) : '';
+        if (!t || !text.trim()) return;
+        const ch = countReadableChars(text);
+        rows.push({ i, n: s.originalIndex || (i + 1), start: t.start, dur: t.end - t.start, ch, cps: ch / (t.end - t.start) });
+    });
+    return rows;
+}
+// Gives each fast cue more time by moving its END into the free gap before the next cue (never closer than 0.08 s,
+// at most 6 s of extra). Starts are never moved, so sync with the speech is untouched. Returns how many cues changed.
+function extendForReadingSpeed(subs, target) {
+    const MIN_DUR = 1.0, GAP = 0.08, MAX_EXT = 6;
+    const items = subs.map(s => {
+        const t = srtCueTimes(s);
+        const text = (s.translatedText !== undefined && s.translatedText !== null) ? String(s.translatedText) : '';
+        return t ? { s, a: t.start, e: t.end, ch: countReadableChars(text) } : null;
+    });
+    let changed = 0;
+    for (let i = 0; i < items.length; i++) {
+        const x = items[i];
+        if (!x || !x.ch) continue;
+        let j = i + 1;
+        while (j < items.length && !items[j]) j++;
+        const nxt = items[j];
+        const deficit = Math.max(MIN_DUR, x.ch / target) - (x.e - x.a);
+        if (deficit <= 0.01) continue;
+        const room = nxt ? Math.max(0, nxt.a - GAP - x.e) : MAX_EXT;
+        const add = Math.min(deficit, room, MAX_EXT);
+        if (add < 0.02) continue;
+        x.e += add;
+        x.s.timeLine = `${formatSrtTimestamp(x.a)} --> ${formatSrtTimestamp(x.e)}`;
+        changed++;
+    }
+    return changed;
+}
+if (fixReadingSpeedBtn) fixReadingSpeedBtn.addEventListener('click', () => {
+    if (isTranslating) { showCheckNotice('ဘာသာပြန်နေဆဲ ဖြစ်သည် — ပြီးမှ နှိပ်ပါ'); return; }
+    if (!lastTranslatedSubs || lastTranslatedSubs.length === 0) {
+        showCheckNotice('ဘာသာပြန်ပြီး output မရှိသေးပါ — အရင် Translate လုပ်ပါ');
+        return;
+    }
+    const target = getReadingBudgetCps() || 14;
+    const before = readingSpeedRows(lastTranslatedSubs);
+    const over = (rows, t) => rows.filter(r => r.cps > t).length;
+    const changed = extendForReadingSpeed(lastTranslatedSubs, target);
+    const after = readingSpeedRows(lastTranslatedSubs);
+    const outputSrt = rebuildSrt(lastTranslatedSubs, { preserveIndex: true });
+    srtOutput.value = outputSrt;
+    srtOutputMeta.textContent = `Subtitles: ${lastTranslatedSubs.length} | Characters: ${outputSrt.length}`;
+
+    const avg = (rows) => rows.length ? rows.reduce((n, r) => n + r.cps, 0) / rows.length : 0;
+    const issues = [];
+    after.filter(r => r.cps > 18).sort((a, b) => b.cps - a.cps).slice(0, 10).forEach(r => {
+        issues.push(`#${r.n} [${formatTime(r.start)}] ${r.cps.toFixed(0)}/s (${r.ch} အက္ခရာ / ${r.dur.toFixed(1)}s) — အချိန်မလောက်လို့ စာကို တိုတိုပြန်ရေးမှ ရမည်`);
+    });
+    const title = `READING SPEED FIX — ပျမ်းမျှ ${avg(before).toFixed(1)} → ${avg(after).toFixed(1)} အက္ခရာ/စက္ကန့် | ${target}/s ထက်မြန်တဲ့ cue ${over(before, target)} → ${over(after, target)} ခု | ၂၀/s ထက်မြန်တာ ${over(before, 20)} → ${over(after, 20)} ခု | time တိုးပေးတဲ့ cue ${changed} ခု`;
+    renderCheckResults(title, issues, '၁၈/s ထက်မြန်တဲ့ cue မကျန်တော့ပါ — ဖတ်ရှုနှုန်း အဆင်ပြေပါပြီ');
+});
+
+
 function extractJsonArray(raw) {
     let cleaned = raw.trim();
     cleaned = cleaned.replace(/^```json\s*/i, '').replace(/^```\s*/, '').replace(/```\s*$/, '').trim();
@@ -1677,7 +1778,9 @@ async function translateChunkWithRetry(chunk, targetLang, maxRetries, timeoutSec
         const timer = setTimeout(() => controller.abort(), Math.max(timeoutSec, 1) * 1000);
 
         try {
-            const prompt = buildTranslationPrompt(lines, targetLang, context);
+            const budgetCps = (targetLang === 'Myanmar (Burmese)') ? getReadingBudgetCps() : 0;
+            const promptContext = budgetCps ? Object.assign({}, context, { budgets: computeReadingBudgets(chunk, budgetCps) }) : context;
+            const prompt = buildTranslationPrompt(lines, targetLang, promptContext);
             const payload = {
                 contents: [{ parts: [{ text: prompt }] }],
                 generationConfig: {
