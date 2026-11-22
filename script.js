@@ -2480,6 +2480,20 @@ const transcribeMaxRetriesInput = document.getElementById('transcribeMaxRetries'
 const transcribeTimeoutSecInput = document.getElementById('transcribeTimeoutSec');
 const transcribeChunkSizeInput = document.getElementById('transcribeChunkSize');
 const transcribeWorkerCountInput = document.getElementById('transcribeWorkerCount');
+const transcribeMaxCharsInput = document.getElementById('transcribeMaxChars');
+const LS_CUE_MAX_CHARS = 'neoyangon_cue_max_chars';
+// "Max chars / cue" (Chinese / Japanese / Korean cues). Smaller = shorter subtitle lines, more cues.
+function applyCueMaxChars() {
+    if (!transcribeMaxCharsInput) return;
+    const v = Math.min(30, Math.max(8, parseInt(transcribeMaxCharsInput.value, 10) || 14));
+    PHRASE_OPTS.cjk.maxChars = v;
+    PHRASE_OPTS.cjk.minChars = Math.min(4, Math.floor(v / 3));
+}
+if (transcribeMaxCharsInput) {
+    const saved = parseInt(safeLsGet(LS_CUE_MAX_CHARS), 10);
+    if (saved >= 8 && saved <= 30) transcribeMaxCharsInput.value = saved;
+    transcribeMaxCharsInput.addEventListener('change', () => { applyCueMaxChars(); safeLsSet(LS_CUE_MAX_CHARS, String(PHRASE_OPTS.cjk.maxChars)); });
+}
 const transcribeWaveformSyncToggle = document.getElementById('transcribeWaveformSyncToggle');
 const clearTranscribeBtn = document.getElementById('clearTranscribeBtn');
 const transcribeBtn = document.getElementById('transcribeBtn');
@@ -2746,7 +2760,7 @@ const T2S_DST =
 const LS_ZH_SCRIPT = 'neoyangon_zh_script'; // 'simplified' (default) | 'off' — localStorage.setItem('neoyangon_zh_script','off') keeps the provider's own script
 const CHUNK_PAD_SEC = 1.5;                  // each chunk is sent with this much extra audio on both sides; only words whose centre lies inside the chunk's own range are kept
 const PHRASE_OPTS = {
-    cjk:   { maxChars: 18, minChars: 4,  pauseSec: 0.30, maxDurSec: 5.5 },
+    cjk:   { maxChars: 14, minChars: 4,  pauseSec: 0.30, maxDurSec: 4.5 }, // maxChars is overridden by the "Max chars / cue" input
     latin: { maxChars: 42, minChars: 12, pauseSec: 0.60, maxDurSec: 6.0 }
 };
 const CJK_ANY_RE = /[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7af]/;
@@ -2883,8 +2897,8 @@ function mergeTinyCues(cues, mode) {
         const prev = out[out.length - 1], next = cues[i + 1];
         const gp = prev ? c.start - prev.end : Infinity;
         const gn = next ? next.start - c.end : Infinity;
-        const fitsPrev = !!prev && gp < MAX_GAP && lenOfText(prev.text + c.text, mode) <= o.maxChars + 4;
-        const fitsNext = !!next && gn < MAX_GAP && lenOfText(c.text + next.text, mode) <= o.maxChars + 4;
+        const fitsPrev = !!prev && gp < MAX_GAP && lenOfText(prev.text + c.text, mode) <= o.maxChars + 2;
+        const fitsNext = !!next && gn < MAX_GAP && lenOfText(c.text + next.text, mode) <= o.maxChars + 2;
         if (fitsNext && (!fitsPrev || gn <= gp)) { next.start = c.start; next.text = glueText(c.text, next.text); }
         else if (fitsPrev) { prev.end = c.end; prev.text = glueText(prev.text, c.text); }
         else out.push(c);
@@ -3062,6 +3076,7 @@ function chunkLooksOffLanguage(units, hasRealSpeech) {
 
 // All chunks' units → final subs [{timeLine,textLines}] (sorted, punctuation-free, one script).
 function assemblePhraseSubs(results, language, envelope, onLog) {
+    if (typeof applyCueMaxChars === 'function') applyCueMaxChars();
     const words = [], segs = [];
     results.forEach(r => {
         if (!r) return;
@@ -3096,6 +3111,16 @@ function assemblePhraseSubs(results, language, envelope, onLog) {
         });
     }
     cues = cues.filter(c => { if (mode === 'cjk' && isLoop(String(c.text || ''))) { noSpeech++; return false; } return true; });
+    if (envelope && typeof envelope.silenceRatio === 'function') {
+        const kept = cues.filter((c, i) => {
+            if (envelope.silenceRatio(c.start, c.end) < 0.9) return true;
+            const prevGap = i > 0 ? c.start - cues[i - 1].end : Infinity;
+            const nextGap = i + 1 < cues.length ? cues[i + 1].start - c.end : Infinity;
+            if ((prevGap >= 4 && nextGap >= 4) || lenOfText(String(c.text || ''), mode) <= 6) { noSpeech++; return false; }
+            return true;
+        });
+        cues = kept;
+    }
 
     const subs = [];
     cues.forEach(c => {
@@ -3615,7 +3640,7 @@ async function handleTranscribeMedia() {
 
     try {
         logTranscribe('Audio track ကို browser ထဲမှာ decode လုပ်နေသည်...');
-        const audioBuffer = await decodeMediaToAudioBuffer(selectedMediaFile);
+        const audioBuffer = await decodeMediaToAudioBuffer(selectedMediaFile, mediaDecodeLogger);
         logTranscribe(`Decode ပြီးပါပြီ — Duration: ${formatTime(audioBuffer.duration)}`, 'ok');
 
         const { srt, providerCounts, ctx: runCtx } = await transcribeMediaWithWorkers(audioBuffer, chunkSizeSec, workerCount, language, maxRetries, timeoutSec, (msg, lvl) => logTranscribe(msg, lvl), useWaveformSync);
@@ -3724,6 +3749,20 @@ function srtCueTimes(sub) {
     return (a === null || b === null || b <= a) ? null : { start: a / 1000, end: b / 1000 };
 }
 
+// Cues sitting on true silence: ≥90 % of their time is at the noise floor AND the cue is short (≤6 characters) or
+// stands alone (no other cue within 4 s). Longer cues inside a conversation are left alone — they may just be
+// quiet speech over background sound. `cues`: [{idx,start,end,text}] sorted by start.
+function findSilentCues(cues, env) {
+    if (!env || typeof env.silenceRatio !== 'function') return [];
+    const mode = detectCueMode(cues.map(c => c.text).join(''));
+    return cues.filter((c, i) => {
+        if (env.silenceRatio(c.start, c.end) < 0.9) return false;
+        const prevGap = i > 0 ? c.start - cues[i - 1].end : Infinity;
+        const nextGap = i + 1 < cues.length ? cues[i + 1].start - c.end : Infinity;
+        return (prevGap >= 4 && nextGap >= 4) || lenOfText(c.text, mode) <= 6;
+    });
+}
+
 // subs: parseSrt() output. env: computeSpeechEnvelope() result. retriedEmpty: [{start,end}] already retried.
 function analyzeTranscribeCompleteness(subs, env, retriedEmpty) {
     const cues = [];
@@ -3735,6 +3774,7 @@ function analyzeTranscribeCompleteness(subs, env, retriedEmpty) {
     const isBad = (c) => isLoopText(c.text) || (mode === 'cjk' && !CJK_ANY_RE.test(c.text));
     const good = cues.filter(c => !isBad(c));
     const bad = cues.filter(isBad);
+    const silent = findSilentCues(good.slice().sort((a, b) => a.start - b.start), env);
 
     const hop = env.hopSec, n = env.frameCount;
     const covered = new Uint8Array(n);
@@ -3766,6 +3806,7 @@ function analyzeTranscribeCompleteness(subs, env, retriedEmpty) {
         cueCount: cues.length,
         mode,
         bad,
+        silent,
         missing: ranges.filter(r => !wasTried(r)),
         triedEmpty: ranges.filter(wasTried),
         speechSec: speechFrames * hop,
@@ -3775,7 +3816,8 @@ function analyzeTranscribeCompleteness(subs, env, retriedEmpty) {
 
 // Missing ranges → API pieces: ranges closer than 3 s are joined, each is widened by 0.8 s, and anything
 // longer than maxPiece is cut into maxPiece-long pieces.
-function buildRetryPieces(missing, duration, maxPiece) {
+function buildRetryPieces(missing, duration, maxPiece, pad) {
+    const PAD = pad === undefined ? 0.8 : pad;
     const sorted = missing.map(r => ({ start: r.start, end: r.end })).sort((a, b) => a.start - b.start);
     const merged = [];
     sorted.forEach(r => {
@@ -3785,7 +3827,7 @@ function buildRetryPieces(missing, duration, maxPiece) {
     });
     const pieces = [];
     merged.forEach(r => {
-        const a = Math.max(0, r.start - 0.8), b = Math.min(duration, r.end + 0.8);
+        const a = Math.max(0, r.start - PAD), b = Math.min(duration, r.end + PAD);
         for (let t = a; t < b - 0.05; t += maxPiece) pieces.push({ a: t, b: Math.min(b, t + maxPiece) });
     });
     return { merged, pieces };
@@ -3801,6 +3843,31 @@ function dropOverlappingCues(freshSubs, existingSubs) {
         return !ex.some(e => Math.min(e.end, t.end) - Math.max(e.start, t.start) > dur * 0.3);
     });
 }
+// Quiet speech under music is often skipped by Whisper-style providers. Lifts the loud-speech level (90th
+// percentile of 50 ms RMS) to about 0.12 with at most `maxGain`, soft-limiting peaks so nothing hard-clips.
+// Works in place on 16 kHz mono samples and returns the gain that was applied (1 = untouched).
+function normalizeSpeechForRetry(data, maxGain) {
+    const WIN = 800; // 50 ms at 16 kHz
+    const levels = [];
+    for (let i = 0; i + WIN <= data.length; i += WIN) {
+        let e = 0;
+        for (let k = i; k < i + WIN; k++) e += data[k] * data[k];
+        levels.push(Math.sqrt(e / WIN));
+    }
+    if (!levels.length) return 1;
+    levels.sort((a, b) => a - b);
+    const r90 = levels[Math.floor(levels.length * 0.9)];
+    if (!(r90 > 1e-5)) return 1;
+    const gain = Math.min(maxGain, 0.12 / r90);
+    if (gain < 1.3) return 1;
+    for (let i = 0; i < data.length; i++) {
+        let y = data[i] * gain;
+        const ay = Math.abs(y);
+        if (ay > 0.7) y = Math.sign(y) * (0.7 + 0.3 * Math.tanh((ay - 0.7) / 0.3));
+        data[i] = y;
+    }
+    return gain;
+}
 // ---- B17 PURE END ----
 
 function renderCompletenessReport(res, ctx) {
@@ -3812,6 +3879,11 @@ function renderCompletenessReport(res, ctx) {
         const sample = res.bad.slice(0, 3).map(c => `"${c.text.slice(0, 20)}"`).join(' ');
         issues.push(`ဘာသာစကားလွဲ / loop cue ${res.bad.length} ခု ပါနေသည် (${sample}) — RETRY MISSING က ဖယ်ပြီး ပြန်ဖြည့်ပေးမည်`);
     }
+    const SHOW_SILENT = 20;
+    res.silent.slice(0, SHOW_SILENT).forEach(c => {
+        issues.push(`#${c.idx + 1} ${formatTime(c.start)} "${c.text.length > 20 ? c.text.slice(0, 20) + '…' : c.text}" — အသံမရှိတဲ့နေရာမှာ cue ပါနေသည် (RETRY MISSING က ဖယ်ပေးမည်)`);
+    });
+    if (res.silent.length > SHOW_SILENT) issues.push(`... အသံမရှိတဲ့နေရာက cue နောက်ထပ် ${res.silent.length - SHOW_SILENT} ခု`);
     const SHOW = 40;
     res.missing.slice(0, SHOW).forEach(r => {
         issues.push(`${formatTime(r.start)} – ${formatTime(r.end)} (အသံ ${Math.max(1, Math.round(r.speechSec))}s) အသံရှိပြီး စာမပါ`);
@@ -3836,7 +3908,7 @@ async function ensureCheckEnvelope() {
     if (sameFile) return lastTranscribeCtx.env;
     if (!selectedMediaFile) throw new Error('Media ဖိုင်ကို ရွေးထားရန် လိုပါသည် (အသံနဲ့ တိုက်စစ်ရမှာမို့)');
     showCheckNotice('Media ကို decode လုပ်ပြီး အသံ envelope တွက်နေသည်...', transcribeCheckResultsBox);
-    const audioBuffer = await decodeMediaToAudioBuffer(selectedMediaFile);
+    const audioBuffer = await decodeMediaToAudioBuffer(selectedMediaFile, mediaDecodeLogger);
     const env = computeSpeechEnvelope(audioBuffer, null);
     const keep = (lastTranscribeCtx && lastTranscribeCtx.fileName === selectedMediaFile.name) ? lastTranscribeCtx : {};
     lastTranscribeCtx = Object.assign({ failedChunks: [], retriedEmpty: [] }, keep, { fileName: selectedMediaFile.name, duration: audioBuffer.duration, env });
@@ -3859,11 +3931,12 @@ async function handleCheckCompleteness() {
     }
 }
 
-async function transcribeRangeToUnits(audioBuffer, a, b, lang, maxRetries, timeoutSec, onLog) {
+async function transcribeRangeToUnits(audioBuffer, a, b, lang, maxRetries, timeoutSec, onLog, maxGain) {
     const padStart = Math.max(0, a - CHUNK_PAD_SEC);
     const padEnd = Math.min(audioBuffer.duration, b + CHUNK_PAD_SEC);
     const sliceBuf = sliceAudioBuffer(audioBuffer, padStart, padEnd);
     const resampled = await resampleTo16kMono(sliceBuf);
+    normalizeSpeechForRetry(resampled.getChannelData(0), maxGain || 12);
     const file = new File([audioBufferToWavBlob(resampled)], `retry_${Math.round(a)}.wav`, { type: 'audio/wav' });
     const result = await transcribeChunkWithRotation(file, lang, maxRetries, timeoutSec, onLog);
     return providerResultToUnits(result, padStart, { start: a, end: b });
@@ -3898,24 +3971,34 @@ async function handleRetryMissing() {
         const ctx = lastTranscribeCtx;
         let subs = parseSrt(currentTranscribeResult.srt);
         let res = analyzeTranscribeCompleteness(subs, env, ctx.retriedEmpty);
+        let removedCount = 0; // wrong-language / loop / silent-spot cues taken out before the retry
 
-        if (res.bad.length) {
-            logTranscribe(`ဘာသာစကားလွဲ / loop cue ${res.bad.length} ခုကို ဖယ်ပြီး အဲဒီနေရာတွေကိုပါ ပြန်ကြိုးစားမည်`, 'warn');
-            const badIdx = new Set(res.bad.map(c => c.idx));
+        if (res.bad.length || res.silent.length) {
+            logTranscribe(`ဘာသာစကားလွဲ / loop cue ${res.bad.length} ခု၊ အသံမရှိတဲ့နေရာက cue ${res.silent.length} ခုကို ဖယ်ပြီး အဲဒီနေရာတွေကိုပါ ပြန်ကြိုးစားမည်`, 'warn');
+            const badIdx = new Set(res.bad.concat(res.silent).map(c => c.idx));
+            removedCount = badIdx.size;
             subs = subs.filter((_, i) => !badIdx.has(i));
             res = analyzeTranscribeCompleteness(subs, env, ctx.retriedEmpty);
         }
-        if (!res.missing.length) {
+        // Ranges that stayed empty after an earlier retry get a DEEPER attempt on the next press (shorter pieces,
+        // stronger volume lift) — up to 3 attempts per range, after that they are treated as music / silence.
+        const attemptsOf = (r) => Math.max(0, ...(ctx.retriedEmpty || []).filter(t => Math.min(t.end, r.end) > Math.max(t.start, r.start)).map(t => t.attempts || 1));
+        const stubborn = res.triedEmpty.filter(r => attemptsOf(r) < 3);
+        const deep = res.missing.length === 0 && stubborn.length > 0;
+        const targets = deep ? stubborn : res.missing;
+        if (!targets.length) {
             logTranscribe('ပြန်လုပ်စရာ ပျောက်နေတဲ့ နေရာ မတွေ့တော့ပါ ✓', 'ok');
-            if (res.bad.length) applyRetrySubs(subs, '(+ cleanup)', ctx);
+            if (res.triedEmpty.length) logTranscribe(`${res.triedEmpty.length} နေရာက ၃ ကြိမ်ထိ ပြန်ကြိုးစားပြီးသားမို့ စာမရတာ — BGM / အသံတိတ်ဖြစ်နိုင်သည်`, 'warn');
+            if (removedCount) applyRetrySubs(subs, '(+ cleanup)', ctx);
             renderCompletenessReport(analyzeTranscribeCompleteness(subs, env, ctx.retriedEmpty), ctx);
             return;
         }
 
         const duration = ctx.duration || env.duration;
-        const maxPiece = Math.max(20, ctx.chunkSizeSec || parseInt(transcribeChunkSizeInput.value, 10) || 60);
-        const { merged, pieces } = buildRetryPieces(res.missing, duration, maxPiece);
-        logTranscribe(`ပျောက်နေတဲ့ နေရာ ${merged.length} ခု (အသံ ${Math.round(res.missing.reduce((n, r) => n + r.speechSec, 0))}s) ကို ${pieces.length} ပိုင်းခွဲပြီး ပြန် transcribe လုပ်မည်...`);
+        const maxPiece = deep ? 8 : 20;
+        const maxGain = deep ? 40 : 12;
+        const { merged, pieces } = buildRetryPieces(targets, duration, maxPiece, deep ? 1.5 : 0.8);
+        logTranscribe(`${deep ? 'ပြန်ကြိုးစားပြီး စာမရသေးတဲ့' : 'ပျောက်နေတဲ့'} နေရာ ${merged.length} ခု (အသံ ${Math.round(targets.reduce((n, r) => n + r.speechSec, 0))}s) ကို ${pieces.length} ပိုင်းခွဲပြီး ပြန် transcribe လုပ်မည်${deep ? ' (နက်နက်ရှိုင်းရှိုင်း — အပိုင်းတို၊ အသံချဲ့)' : ' (အသံနည်းနည်းချဲ့ပြီး)'}...`);
 
         let lang = (ctx.chunkLanguage && ctx.chunkLanguage !== 'auto') ? ctx.chunkLanguage : transcribeLangSelect.value;
         if (lang === 'auto') {
@@ -3925,7 +4008,7 @@ async function handleRetryMissing() {
         if (lang !== 'auto') logTranscribe(`ဘာသာစကားကို '${lang}' အဖြစ် သတ်မှတ်ပြီး လုပ်မည်`);
 
         logTranscribe('Audio track ကို browser ထဲမှာ decode လုပ်နေသည်...');
-        const audioBuffer = await decodeMediaToAudioBuffer(selectedMediaFile);
+        const audioBuffer = await decodeMediaToAudioBuffer(selectedMediaFile, mediaDecodeLogger);
 
         const maxRetries = Math.max(parseInt(transcribeMaxRetriesInput.value, 10) || 2, 1);
         const timeoutSec = Math.max(parseInt(transcribeTimeoutSecInput.value, 10) || 120, 10);
@@ -3946,7 +4029,7 @@ async function handleRetryMissing() {
                 let ok = false;
                 for (let round = 0; round < 3 && !ok; round++) {
                     try {
-                        results[i] = await transcribeRangeToUnits(audioBuffer, p.a, p.b, lang, maxRetries, timeoutSec, (m, l) => logTranscribe(m, l));
+                        results[i] = await transcribeRangeToUnits(audioBuffer, p.a, p.b, lang, maxRetries, timeoutSec, (m, l) => logTranscribe(m, l), maxGain);
                         ok = true;
                     } catch (e) {
                         if (transcribeAborted) return;
@@ -3968,7 +4051,10 @@ async function handleRetryMissing() {
 
         const newSubs = dropOverlappingCues(assemblePhraseSubs(results, lang, env, (m, l) => logTranscribe(m, l)), subs);
         const stillEmpty = merged.filter(r => !newSubs.some(ns => { const t = srtCueTimes(ns); return t && Math.min(t.end, r.end + 1) - Math.max(t.start, r.start - 1) > 0; }));
-        ctx.retriedEmpty = (ctx.retriedEmpty || []).filter(t => !merged.some(r => Math.min(t.end, r.end) > Math.max(t.start, r.start))).concat(stillEmpty);
+        const prevTried = ctx.retriedEmpty || [];
+        const attemptsBefore = (r) => Math.max(0, ...prevTried.filter(t => Math.min(t.end, r.end) > Math.max(t.start, r.start)).map(t => t.attempts || 1));
+        ctx.retriedEmpty = prevTried.filter(t => !merged.some(r => Math.min(t.end, r.end) > Math.max(t.start, r.start)))
+            .concat(stillEmpty.map(r => ({ start: r.start, end: r.end, attempts: attemptsBefore(r) + 1 })));
         logTranscribe(`ထပ်ရလာတဲ့ cue ${newSubs.length} ခု ဖြည့်ပြီး၊ စာမရတဲ့ နေရာ ${stillEmpty.length} ခု`, newSubs.length ? 'ok' : 'warn');
 
         const finalSubs = subs.concat(newSubs);
@@ -4313,7 +4399,362 @@ function buildGeminiTranscribePrompt(languageHint, chunkIndex, totalChunks) {
 
 // ---- Web Audio decode / slice / resample / WAV-encode helpers (no ffmpeg) ----
 
-function decodeMediaToAudioBuffer(file) {
+// =============================================================
+// B20 — STREAMING DECODE for big MP4 / M4A / MP3 files
+// =============================================================
+// There is no 50 MB limit in this app — but decodeAudioData() needs the WHOLE file in memory AND the whole
+// decoded PCM (16 kHz x channels x 4 bytes per sample, i.e. ~230 MB per hour per channel) at once. On a phone
+// a 60-70 MB file (an hour or more of audio) runs out of memory and fails with "Unable to decode audio data".
+//
+// Big files are therefore decoded as a stream: the container is parsed here (MP4/M4A sample table, or MP3
+// frame headers), the compressed frames are read from the File in small slices, decoded with WebCodecs
+// AudioDecoder, mixed to mono, resampled to 16 kHz and written straight into ONE mono 16 kHz AudioBuffer
+// (~0.23 GB per hour instead of several GB of temporary buffers). Everything downstream is unchanged.
+// If WebCodecs / the codec / the container is not supported, the old whole-file decode is still tried.
+const STREAM_DECODE_MIN_BYTES = 24 * 1024 * 1024; // smaller files keep using the plain (fast) decodeAudioData path
+
+// ---- B20 PURE START ----
+async function fileBytes(file, start, end) {
+    return new Uint8Array(await file.slice(start, end).arrayBuffer());
+}
+
+// ---------- MP4 / M4A ----------
+async function findMp4Moov(file) {
+    let pos = 0;
+    while (pos + 8 <= file.size) {
+        const head = await fileBytes(file, pos, Math.min(file.size, pos + 16));
+        const dv = new DataView(head.buffer, head.byteOffset, head.byteLength);
+        let size = dv.getUint32(0), hdr = 8;
+        const type = String.fromCharCode(head[4], head[5], head[6], head[7]);
+        if (size === 1) { size = dv.getUint32(8) * 4294967296 + dv.getUint32(12); hdr = 16; }
+        else if (size === 0) size = file.size - pos;
+        if (size < hdr) throw new Error('MP4 box ပျက်နေသည်');
+        if (type === 'moov') return fileBytes(file, pos + hdr, pos + size);
+        pos += size;
+    }
+    throw new Error('MP4 ထဲမှာ moov (အချက်အလက်) မတွေ့ပါ');
+}
+
+function* mp4Boxes(u8, start, end) {
+    const dv = new DataView(u8.buffer, u8.byteOffset, u8.byteLength);
+    let p = start === undefined ? 0 : start;
+    const stop = end === undefined ? u8.length : end;
+    while (p + 8 <= stop) {
+        let size = dv.getUint32(p), hdr = 8;
+        const type = String.fromCharCode(u8[p + 4], u8[p + 5], u8[p + 6], u8[p + 7]);
+        if (size === 1) { size = dv.getUint32(p + 8) * 4294967296 + dv.getUint32(p + 12); hdr = 16; }
+        else if (size === 0) size = stop - p;
+        if (size < hdr || p + size > stop) return;
+        yield { type, start: p + hdr, end: p + size };
+        p += size;
+    }
+}
+function mp4Child(u8, box, type) {
+    for (const b of mp4Boxes(u8, box.start, box.end)) if (b.type === type) return b;
+    return null;
+}
+
+// esds → { oti, asc }: walks the MPEG-4 descriptors (ES_Descr 0x03 → DecoderConfig 0x04 → DecoderSpecificInfo 0x05).
+function parseEsds(u8, start, end) {
+    let p = start + 4; // version/flags
+    let oti = null;
+    const readLen = () => { let len = 0, n = 0, b; do { b = u8[p++]; len = (len << 7) | (b & 0x7f); n++; } while ((b & 0x80) && n < 4); return len; };
+    while (p < end) {
+        const tag = u8[p++];
+        const len = readLen();
+        if (tag === 0x03) { p += 2; const flags = u8[p++]; if (flags & 0x80) p += 2; if (flags & 0x40) p += 1 + u8[p]; if (flags & 0x20) p += 2; continue; }
+        if (tag === 0x04) { oti = u8[p]; p += 13; continue; }
+        if (tag === 0x05) return { oti, asc: u8.slice(p, p + len) };
+        p += len;
+    }
+    return { oti, asc: null };
+}
+
+function parseAsc(asc) {
+    const AAC_RATES = [96000, 88200, 64000, 48000, 44100, 32000, 24000, 22050, 16000, 12000, 11025, 8000, 7350];
+    let bit = 0;
+    const read = (n) => { let v = 0; for (let i = 0; i < n; i++, bit++) v = (v << 1) | ((asc[bit >> 3] >> (7 - (bit & 7))) & 1); return v; };
+    let aot = read(5);
+    if (aot === 31) aot = 32 + read(6);
+    let idx = read(4);
+    const rate = idx === 15 ? read(24) : AAC_RATES[idx];
+    const channels = read(4);
+    return { aot, rate, channels };
+}
+
+// The first audio track of an MP4/M4A/MOV, as a flat sample table: where every compressed frame lives.
+function parseMp4AudioTrack(moov) {
+    const dv = new DataView(moov.buffer, moov.byteOffset, moov.byteLength);
+    const u32 = (p) => dv.getUint32(p);
+    const u16 = (p) => dv.getUint16(p);
+    for (const trak of mp4Boxes(moov)) {
+        if (trak.type !== 'trak') continue;
+        const mdia = mp4Child(moov, trak, 'mdia');
+        const hdlr = mdia && mp4Child(moov, mdia, 'hdlr');
+        if (!hdlr) continue;
+        if (String.fromCharCode(moov[hdlr.start + 8], moov[hdlr.start + 9], moov[hdlr.start + 10], moov[hdlr.start + 11]) !== 'soun') continue;
+
+        const mdhd = mp4Child(moov, mdia, 'mdhd');
+        let timescale, mdur;
+        if (moov[mdhd.start] === 1) { timescale = u32(mdhd.start + 20); mdur = u32(mdhd.start + 24) * 4294967296 + u32(mdhd.start + 28); }
+        else { timescale = u32(mdhd.start + 12); mdur = u32(mdhd.start + 16); }
+
+        const minf = mp4Child(moov, mdia, 'minf');
+        const stbl = minf && mp4Child(moov, minf, 'stbl');
+        if (!stbl) continue;
+        const stsd = mp4Child(moov, stbl, 'stsd'), stts = mp4Child(moov, stbl, 'stts'), stsz = mp4Child(moov, stbl, 'stsz');
+        const stsc = mp4Child(moov, stbl, 'stsc');
+        const stco = mp4Child(moov, stbl, 'stco'), co64 = mp4Child(moov, stbl, 'co64');
+        if (!stsd || !stts || !stsz || !stsc || !(stco || co64)) throw new Error('ဒီ MP4 ရဲ့ sample table မပြည့်စုံပါ (fragmented MP4 ဖြစ်နိုင်သည်)');
+
+        // --- sample entry (mp4a) ---
+        const entry = stsd.start + 8;
+        const entryType = String.fromCharCode(moov[entry + 4], moov[entry + 5], moov[entry + 6], moov[entry + 7]);
+        if (entryType !== 'mp4a') throw new Error(`audio codec '${entryType}' ကို streaming decode မထောက်ပံ့ပါ`);
+        const body = entry + 8;
+        const version = u16(body + 8);
+        const stsdChannels = u16(body + 16);
+        const stsdRate = u32(body + 24) >>> 16;
+        const childStart = body + 28 + (version === 1 ? 16 : version === 2 ? 36 : 0);
+        const entryEnd = entry + u32(entry);
+        let esds = null;
+        for (const b of mp4Boxes(moov, childStart, entryEnd)) {
+            if (b.type === 'esds') { esds = b; break; }
+            if (b.type === 'wave') { esds = mp4Child(moov, b, 'esds'); if (esds) break; }
+        }
+        if (!esds) throw new Error('esds (codec config) မတွေ့ပါ');
+        const { oti, asc } = parseEsds(moov, esds.start, esds.end);
+        let codec, sampleRate = stsdRate, channels = stsdChannels, description = null;
+        if (oti === 0x40 && asc && asc.length >= 2) {
+            const a = parseAsc(asc);
+            codec = 'mp4a.40.' + a.aot;
+            if (a.rate) sampleRate = a.rate;
+            if (a.channels) channels = a.channels;
+            description = asc;
+        } else if (oti === 0x6b || oti === 0x69) {
+            codec = 'mp3';
+        } else {
+            throw new Error(`audio object type 0x${(oti || 0).toString(16)} ကို streaming decode မထောက်ပံ့ပါ`);
+        }
+
+        // --- sample table ---
+        const sampleCount = u32(stsz.start + 8);
+        if (!sampleCount) throw new Error('ဒီ MP4 ထဲမှာ audio sample မရှိပါ');
+        const fixedSize = u32(stsz.start + 4);
+        const sizes = new Uint32Array(sampleCount);
+        for (let i = 0; i < sampleCount; i++) sizes[i] = fixedSize || u32(stsz.start + 12 + i * 4);
+
+        const chunkBox = co64 || stco;
+        const chunkCount = u32(chunkBox.start + 4);
+        const chunkOffsets = new Float64Array(chunkCount);
+        for (let i = 0; i < chunkCount; i++) {
+            chunkOffsets[i] = co64 ? u32(chunkBox.start + 8 + i * 8) * 4294967296 + u32(chunkBox.start + 12 + i * 8) : u32(chunkBox.start + 8 + i * 4);
+        }
+        const stscCount = u32(stsc.start + 4);
+        const stscRuns = [];
+        for (let i = 0; i < stscCount; i++) stscRuns.push({ first: u32(stsc.start + 8 + i * 12), per: u32(stsc.start + 12 + i * 12) });
+
+        const offsets = new Float64Array(sampleCount);
+        let s = 0, run = 0;
+        for (let c = 0; c < chunkCount && s < sampleCount; c++) {
+            while (run + 1 < stscRuns.length && stscRuns[run + 1].first <= c + 1) run++;
+            let off = chunkOffsets[c];
+            for (let k = 0; k < stscRuns[run].per && s < sampleCount; k++, s++) { offsets[s] = off; off += sizes[s]; }
+        }
+
+        // timestamps (µs) from stts
+        const timestampsUs = new Float64Array(sampleCount);
+        const sttsCount = u32(stts.start + 4);
+        let t = 0; s = 0;
+        for (let e = 0; e < sttsCount && s < sampleCount; e++) {
+            const cnt = u32(stts.start + 8 + e * 8), delta = u32(stts.start + 12 + e * 8);
+            for (let k = 0; k < cnt && s < sampleCount; k++, s++) { timestampsUs[s] = t * 1e6 / timescale; t += delta; }
+        }
+        const durationSec = (mdur || t) / timescale;
+        return { kind: 'mp4', codec, sampleRate, channels, description, offsets, sizes, timestampsUs, durationSec };
+    }
+    throw new Error('ဒီဖိုင်ထဲမှာ audio track မတွေ့ပါ');
+}
+
+// ---------- MP3 ----------
+const MP3_BR_V1 = [0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320];
+const MP3_BR_V2 = [0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160];
+const MP3_RATES = { 3: [44100, 48000, 32000], 2: [22050, 24000, 16000], 0: [11025, 12000, 8000] };
+
+// Layer III frame header at buf[i] (or null).
+function mp3HeaderAt(buf, i) {
+    if (i + 4 > buf.length || buf[i] !== 0xff || (buf[i + 1] & 0xe0) !== 0xe0) return null;
+    const ver = (buf[i + 1] >> 3) & 3, layer = (buf[i + 1] >> 1) & 3;
+    if (ver === 1 || layer !== 1) return null; // reserved version / not Layer III
+    const br = buf[i + 2] >> 4, sr = (buf[i + 2] >> 2) & 3, pad = (buf[i + 2] >> 1) & 1;
+    if (br === 0 || br === 15 || sr === 3) return null;
+    const sampleRate = MP3_RATES[ver][sr];
+    const kbps = (ver === 3 ? MP3_BR_V1 : MP3_BR_V2)[br];
+    const frameLen = (ver === 3 ? Math.floor(144000 * kbps / sampleRate) : Math.floor(72000 * kbps / sampleRate)) + pad;
+    const channels = ((buf[i + 3] >> 6) & 3) === 3 ? 1 : 2;
+    return { frameLen, samples: ver === 3 ? 1152 : 576, sampleRate, channels, ver };
+}
+function mp3IsInfoFrame(buf, i, h) {
+    const o = i + 4 + (h.ver === 3 ? (h.channels === 1 ? 17 : 32) : (h.channels === 1 ? 9 : 17));
+    const tag = String.fromCharCode(buf[o] || 0, buf[o + 1] || 0, buf[o + 2] || 0, buf[o + 3] || 0);
+    return tag === 'Xing' || tag === 'Info';
+}
+
+async function scanMp3(file) {
+    const head = await fileBytes(file, 0, Math.min(file.size, 10));
+    let pos = 0;
+    if (head[0] === 0x49 && head[1] === 0x44 && head[2] === 0x33) {
+        pos = 10 + (((head[6] & 0x7f) << 21) | ((head[7] & 0x7f) << 14) | ((head[8] & 0x7f) << 7) | (head[9] & 0x7f)) + ((head[5] & 0x10) ? 10 : 0);
+    }
+    const BLOCK = 4 * 1024 * 1024;
+    const offs = [], szs = [];
+    let first = null, carry = new Uint8Array(0), carryStart = pos, readPos = pos, frameNo = 0;
+    for (;;) {
+        const eof = readPos >= file.size;
+        const chunk = eof ? new Uint8Array(0) : await fileBytes(file, readPos, Math.min(file.size, readPos + BLOCK));
+        readPos += chunk.length;
+        const buf = new Uint8Array(carry.length + chunk.length);
+        buf.set(carry); buf.set(chunk, carry.length);
+        const base = carryStart;
+        let i = 0;
+        while (i + 4 <= buf.length) {
+            const h = mp3HeaderAt(buf, i);
+            if (!h) { i++; continue; }
+            if (!eof && i + h.frameLen + 4 > buf.length) break; // frame not fully loaded yet
+            if (i + h.frameLen > buf.length) break;             // truncated last frame
+            if (i + h.frameLen + 4 <= buf.length && !mp3HeaderAt(buf, i + h.frameLen) && i + h.frameLen < buf.length) { i++; continue; } // false sync
+            if (!first) first = { sampleRate: h.sampleRate, channels: h.channels, samples: h.samples };
+            if (!(frameNo === 0 && mp3IsInfoFrame(buf, i, h))) { offs.push(base + i); szs.push(h.frameLen); }
+            frameNo++;
+            i += h.frameLen;
+        }
+        carry = buf.slice(i);
+        carryStart = base + i;
+        if (eof) break;
+    }
+    if (!first || offs.length === 0) throw new Error('MP3 frame မတွေ့ပါ (Layer III မဟုတ်ဖြစ်နိုင်သည်)');
+    const spf = first.samples;
+    const timestampsUs = new Float64Array(offs.length);
+    for (let k = 0; k < offs.length; k++) timestampsUs[k] = k * spf * 1e6 / first.sampleRate;
+    return {
+        kind: 'mp3', codec: 'mp3', sampleRate: first.sampleRate, channels: first.channels, description: null,
+        offsets: Float64Array.from(offs), sizes: Uint32Array.from(szs), timestampsUs,
+        durationSec: offs.length * spf / first.sampleRate
+    };
+}
+
+// ---------- streaming mono mix + resample ----------
+// Area-average (box) resampler working block by block: every output sample is the average of the input
+// samples that fall inside its time slot (with fractional edges), which also low-passes before decimation.
+class StreamResampler {
+    constructor(inRate, outRate) { this.ratio = inRate / outRate; this.sum = 0; this.weight = 0; }
+    push(inp, n, out, o) {
+        const ratio = this.ratio, cap = out.length;
+        let sum = this.sum, weight = this.weight;
+        for (let i = 0; i < n; i++) {
+            const x = inp[i];
+            let w = 1;
+            while (w > 0) {
+                const need = ratio - weight;
+                if (w >= need) { sum += x * need; w -= need; if (o < cap) out[o++] = sum / ratio; sum = 0; weight = 0; }
+                else { sum += x * w; weight += w; w = 0; }
+            }
+        }
+        this.sum = sum; this.weight = weight;
+        return o;
+    }
+}
+
+// Decodes every frame of `track` (from parseMp4AudioTrack / scanMp3) into one mono 16 kHz AudioBuffer.
+async function streamDecodeSamples(file, track, onLog) {
+    const OUT_RATE = 16000;
+    const cfg = { codec: track.codec, sampleRate: track.sampleRate, numberOfChannels: track.channels };
+    if (track.description) cfg.description = track.description;
+    const support = await AudioDecoder.isConfigSupported(cfg);
+    if (!support || !support.supported) throw new Error(`ဒီ browser က ${track.codec} audio ကို WebCodecs နဲ့ decode မလုပ်နိုင်ပါ`);
+
+    const totalOut = Math.max(1, Math.ceil(track.durationSec * OUT_RATE));
+    let outBuffer;
+    try { outBuffer = new AudioBuffer({ numberOfChannels: 1, length: totalOut, sampleRate: OUT_RATE }); }
+    catch (e) { throw new Error(`Audio ${Math.round(track.durationSec / 60)} မိနစ်ကို memory ထဲ ထည့်မရပါ (${e.message || e})`); }
+    const out = outBuffer.getChannelData(0);
+
+    let written = 0, resampler = null, fatal = null, plane = null, mono = null;
+    const decoder = new AudioDecoder({
+        output: (ad) => {
+            try {
+                const n = ad.numberOfFrames, ch = ad.numberOfChannels;
+                if (!resampler) resampler = new StreamResampler(ad.sampleRate, OUT_RATE);
+                if (!plane || plane.length !== n) { plane = new Float32Array(n); mono = new Float32Array(n); }
+                mono.fill(0);
+                for (let c = 0; c < ch; c++) {
+                    ad.copyTo(plane, { planeIndex: c, format: 'f32-planar' });
+                    for (let i = 0; i < n; i++) mono[i] += plane[i];
+                }
+                if (ch > 1) for (let i = 0; i < n; i++) mono[i] /= ch;
+                written = resampler.push(mono, n, out, written);
+            } catch (e) { fatal = fatal || e; }
+            finally { ad.close(); }
+        },
+        error: (e) => { fatal = fatal || e; }
+    });
+    decoder.configure(cfg);
+
+    const MAX_BATCH = 4 * 1024 * 1024, MAX_GAP = 256 * 1024;
+    const { offsets, sizes, timestampsUs } = track;
+    const n = offsets.length;
+    let i = 0, lastPct = -1;
+    while (i < n) {
+        if (fatal) throw fatal;
+        let j = i;
+        const start = offsets[i];
+        let end = start + sizes[i];
+        while (j + 1 < n) {
+            const ns = offsets[j + 1], ne = ns + sizes[j + 1];
+            if (ns < end || ns - end > MAX_GAP || ne - start > MAX_BATCH) break;
+            j++; end = ne;
+        }
+        const buf = await fileBytes(file, start, end);
+        for (let k = i; k <= j; k++) {
+            const o = offsets[k] - start;
+            decoder.decode(new EncodedAudioChunk({ type: 'key', timestamp: Math.round(timestampsUs[k]), data: buf.subarray(o, o + sizes[k]) }));
+        }
+        i = j + 1;
+        while (decoder.decodeQueueSize > 200 && !fatal) await new Promise(r => setTimeout(r, 2));
+        const pct = Math.floor(i * 100 / n / 10) * 10;
+        if (onLog && pct !== lastPct) { lastPct = pct; onLog(`Streaming decode: ${pct}%`); }
+    }
+    await decoder.flush();
+    decoder.close();
+    if (fatal) throw fatal;
+    if (written < totalOut * 0.9) throw new Error(`Decode မပြည့်စုံပါ (${Math.round(written * 100 / totalOut)}% သာ ရခဲ့သည်)`);
+    return outBuffer;
+}
+// ---- B20 PURE END ----
+
+// Decode progress goes to the Transcribe tab's log panel.
+function mediaDecodeLogger(msg, level) { try { logTranscribe(msg, level); } catch (e) { console.log(msg); } }
+
+async function streamDecodeToMono16k(file, onLog) {
+    if (typeof AudioDecoder === 'undefined' || typeof EncodedAudioChunk === 'undefined' || typeof AudioBuffer === 'undefined') {
+        throw new Error('ဒီ browser မှာ WebCodecs (AudioDecoder) မရှိပါ');
+    }
+    const head = await fileBytes(file, 0, Math.min(file.size, 16));
+    let track;
+    if (head[4] === 0x66 && head[5] === 0x74 && head[6] === 0x79 && head[7] === 0x70) { // "ftyp" → MP4 / M4A / MOV
+        if (onLog) onLog('MP4/M4A container ကို ဖတ်နေသည်...');
+        track = parseMp4AudioTrack(await findMp4Moov(file));
+    } else if ((head[0] === 0x49 && head[1] === 0x44 && head[2] === 0x33) || (head[0] === 0xff && (head[1] & 0xe0) === 0xe0)) { // ID3 / MP3 frame
+        if (onLog) onLog('MP3 frame တွေကို စစ်နေသည်...');
+        track = await scanMp3(file);
+    } else {
+        throw new Error('ဒီ file format ကို streaming decode မထောက်ပံ့ပါ');
+    }
+    if (onLog) onLog(`${track.codec} • ${track.sampleRate}Hz • ${track.channels}ch • ${Math.round(track.durationSec)}s • frame ${track.offsets.length} ခု — အပိုင်းလေးတွေခွဲပြီး decode လုပ်မည် (memory သက်သာ)`);
+    return streamDecodeSamples(file, track, onLog);
+}
+
+function nativeDecodeAudio(file) {
     return file.arrayBuffer().then(arrayBuffer => {
         const AudioCtx = window.AudioContext || window.webkitAudioContext;
         if (!AudioCtx) throw new Error('ဤ browser တွင် Web Audio API မရှိပါ — AI TRANSCRIBE (GEMINI) ကို သုံး၍မရပါ');
@@ -4321,8 +4762,34 @@ function decodeMediaToAudioBuffer(file) {
         try { ctx = new AudioCtx({ sampleRate: 16000 }); } catch (e) { ctx = new AudioCtx(); }
         return ctx.decodeAudioData(arrayBuffer)
             .then(audioBuffer => { ctx.close().catch(() => {}); return audioBuffer; })
-            .catch(err => { ctx.close().catch(() => {}); throw new Error(`Media ဖိုင်ကို decode လုပ်ရာတွင် error တက်ပါသည် — codec မထောက်ပံ့ခြင်း ဖြစ်နိုင်ပါသည် (${err.message || err})`); });
+            .catch(err => { ctx.close().catch(() => {}); throw new Error(err && err.message ? err.message : String(err)); });
     });
+}
+
+// Small files: plain decodeAudioData (fast). Big files: streaming decode first, plain decode as the fallback.
+async function decodeMediaToAudioBuffer(file, onLog) {
+    const log = onLog || (() => {});
+    const canStream = typeof AudioDecoder !== 'undefined' && typeof EncodedAudioChunk !== 'undefined';
+    const big = file.size > STREAM_DECODE_MIN_BYTES;
+    let streamErr = null;
+    if (big && canStream) {
+        log(`ဖိုင်ကြီးသည် (${formatBytes(file.size)}) — အပိုင်းလေးတွေခွဲပြီး decode လုပ်မည်...`);
+        try { return await streamDecodeToMono16k(file, log); }
+        catch (e) { streamErr = e; log(`Streaming decode မအောင်မြင်ပါ (${e.message || e}) — ပုံမှန် decode နဲ့ ပြန်ကြိုးစားမည်`, 'warn'); }
+    }
+    try {
+        return await nativeDecodeAudio(file);
+    } catch (nativeErr) {
+        if (!big && canStream) {
+            try { return await streamDecodeToMono16k(file, log); } catch (e) { streamErr = e; }
+        }
+        const reasons = [`ပုံမှန် decode: ${nativeErr.message || nativeErr}`];
+        if (streamErr) reasons.push(`streaming decode: ${streamErr.message || streamErr}`);
+        const hint = big
+            ? 'ဖိုင်က အရမ်းကြီး/ရှည်လို့ browser memory မလောက်တာ ဒါမှမဟုတ် codec မထောက်ပံ့တာ ဖြစ်နိုင်ပါတယ်။ ဖိုင်ကို အပိုင်းခွဲ (ဥပမာ ၃၀ မိနစ်စီ) ဒါမှမဟုတ် MP3 / AAC (.m4a) အဖြစ် ပြောင်းပြီး ပြန်စမ်းကြည့်ပါ'
+            : 'codec မထောက်ပံ့ခြင်း ဖြစ်နိုင်ပါသည်';
+        throw new Error(`Media ဖိုင် (${formatBytes(file.size)}) ကို decode လုပ်ရာတွင် error တက်ပါသည် — ${hint} (${reasons.join(' | ')})`);
+    }
 }
 
 // Copies out just [startSec, endSec) from the full decoded buffer into a standalone
@@ -4503,6 +4970,15 @@ function computeSpeechEnvelope(audioBuffer, onLog) {
     return {
         hopSec, frameCount, duration: audioBuffer.duration, isSpeechAtFrame, frameAtTime,
         rmsAt(f) { return (f >= 0 && f < frameCount) ? rms[f] : 0; },
+        // Share of frames in [aSec, bSec] whose energy is indistinguishable from the recording's noise floor
+        // (true silence). Quiet speech sits clearly above this level, so it is not counted as silence.
+        silenceRatio(aSec, bSec) {
+            const q = Math.max(noiseFloor * 1.6, 0.0012);
+            const f0 = frameAtTime(aSec), f1 = Math.max(f0, frameAtTime(bSec));
+            let n = 0, c = 0;
+            for (let f = f0; f <= f1; f++) { n++; if (rms[f] <= q) c++; }
+            return n ? c / n : 0;
+        },
         // Cue start that sits at the END of the previous phrase: skips the short speech tail (≤0.45s,
         // mostly the detector's own 300ms hang) and, if real silence of ≥0.8s follows before speech
         // starts again inside [fromSec, toSec], returns that speech onset (else null).
@@ -4863,7 +5339,7 @@ async function handleGeminiTranscribe() {
 
     try {
         logTranscribe('Audio track ကို browser ထဲမှာ decode လုပ်နေသည်...');
-        const audioBuffer = await decodeMediaToAudioBuffer(selectedMediaFile);
+        const audioBuffer = await decodeMediaToAudioBuffer(selectedMediaFile, mediaDecodeLogger);
         logTranscribe(`Decode ပြီးပါပြီ — Duration: ${formatTime(audioBuffer.duration)}`, 'ok');
 
         const srt = await geminiTranscribeWithWorkers(audioBuffer, chunkSizeSec, workerCount, languageHint, maxRetries, timeoutSec, (msg, lvl) => logTranscribe(msg, lvl), useWaveformSync);
@@ -5895,7 +6371,7 @@ async function handleWaveformFix() {
     waveformFixBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> SYNCING...';
     try {
         logTranscribe('WAVEFORM FIX: media ကို decode လုပ်နေသည်...');
-        const audioBuffer = await decodeMediaToAudioBuffer(selectedMediaFile);
+        const audioBuffer = await decodeMediaToAudioBuffer(selectedMediaFile, mediaDecodeLogger);
         const envelope = computeSpeechEnvelope(audioBuffer, (m, l) => logTranscribe(m, l));
         const subs = parseSrt(currentTranscribeResult.srt);
         const refined = refineCueTimingsWithEnvelope(subs, envelope, (m, l) => logTranscribe(m, l));
