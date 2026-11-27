@@ -78,13 +78,16 @@ let currentAudioObjectUrl = null; // tracks the last blob: URL handed to audioPl
 let isGenerating = false;
 let ttsAborted = false;
 let activeTtsControllers = [];
-const TTS_CHUNK_TIMEOUT_SEC = 60; // per-chunk network timeout for the TTS engine — previously unbounded (see synthesizeChunk)
+let TTS_CHUNK_TIMEOUT_SEC = 60;
+let TTS_WORKERS = 3, TTS_MAX_RETRIES = 3, TTS_CHUNK_CHARS = 1200; // set from the Text-to-Speech tab by readTtsSettings() // per-chunk network timeout for the TTS engine — previously unbounded (see synthesizeChunk)
 let visualizerMode = 'spectrum';
 let clarityBoostActive = true;
 let cyberReverbActive = false;
 
 // ---- Default TTS Voice Presets ----
 const VOICES = [
+    { id: "edge:my-MM-ThihaNeural", name: "Thiha (ကျား) · Edge TTS", detail: "မြန်မာ အမျိုးသားအသံ — Microsoft Edge (အခမဲ့၊ Gemini key မလို)" },
+    { id: "edge:my-MM-NilarNeural", name: "Nilar (မ) · Edge TTS", detail: "မြန်မာ အမျိုးသမီးအသံ — Microsoft Edge (အခမဲ့၊ Gemini key မလို)" },
     { id: "Puck", name: "Puck (Upbeat & Energetic)", detail: "တက်ကြွပြီး ကြည်လင်သော အသံ (Energetic, high clarity)" },
     { id: "Charon", name: "Charon (Informative News)", detail: "သတင်းထုတ်ပြန်ချက်နှင့် တည်ငြိမ်သောအသံ (Clear news tone)" },
     { id: "Kore", name: "Kore (Firm & Direct)", detail: "ပြတ်သားပြီး အာဏာရှိသောအသံ (Direct & authoritative)" },
@@ -701,9 +704,45 @@ function splitTextIntoChunks(text, maxChunkLen = 1200) {
 // so a single hung request could freeze generation with no way to cancel except a full
 // page reload. Now every attempt is time-boxed (TTS_CHUNK_TIMEOUT_SEC) and every in-flight
 // controller is tracked in activeTtsControllers so the STOP button can abort them instantly.
+// ---- Edge TTS (Thiha / Nilar) through your own Cloudflare Worker (edge-tts-worker.js) ----
+const LS_EDGE_URL = 'neoyangon_edge_worker';
+let edgeDecodeCtx = null;
+function readTtsSettings() {
+    const n = (id, d, min) => Math.max(parseInt((document.getElementById(id) || {}).value, 10) || d, min);
+    TTS_CHUNK_CHARS = n('ttsChunkSize', 1200, 200); TTS_WORKERS = n('ttsWorkers', 3, 1);
+    TTS_CHUNK_TIMEOUT_SEC = n('ttsTimeout', 60, 10); TTS_MAX_RETRIES = n('ttsRetries', 3, 1);
+}
+async function edgeSynthesize(text, voiceId) {
+    const url = (safeLsGet(LS_EDGE_URL) || '').trim();
+    if (!/^https?:\/\//.test(url)) throw new Error('Edge Worker URL မထည့်ရသေးပါ (Text to Speech tab → Edge TTS Worker URL)');
+    let last;
+    for (let a = 0; a < TTS_MAX_RETRIES; a++) {
+        if (ttsAborted) throw new Error('Stopped by user');
+        const ctl = new AbortController(); activeTtsControllers.push(ctl);
+        const timer = setTimeout(() => ctl.abort(), TTS_CHUNK_TIMEOUT_SEC * 1000);
+        try {
+            const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text, voice: voiceId }), signal: ctl.signal });
+            clearTimeout(timer);
+            if (!r.ok) throw new Error('Edge HTTP ' + r.status + ' ' + (await r.text()).slice(0, 100));
+            edgeDecodeCtx = edgeDecodeCtx || new (window.AudioContext || window.webkitAudioContext)();
+            const ab = await edgeDecodeCtx.decodeAudioData(await r.arrayBuffer());
+            const f = ab.getChannelData(0), i16 = new Int16Array(f.length);
+            for (let k = 0; k < f.length; k++) i16[k] = Math.max(-1, Math.min(1, f[k])) * 32767;
+            return { pcmBuffer: i16.buffer, sampleRate: ab.sampleRate };
+        } catch (e) {
+            clearTimeout(timer);
+            if (ttsAborted) throw new Error('Stopped by user');
+            last = e.name === 'AbortError' ? new Error('Timeout (' + TTS_CHUNK_TIMEOUT_SEC + 's)') : e;
+            await sleep(retryBackoffMs(a));
+        } finally { activeTtsControllers = activeTtsControllers.filter(c => c !== ctl); }
+    }
+    throw last || new Error('Edge TTS failed');
+}
+
 async function synthesizeChunk(textChunk, voice) {
+    if (String(voice).startsWith('edge:')) return edgeSynthesize(textChunk, String(voice).slice(5));
     const totalCombos = Math.max(getKeys().length * getModels().length, 1);
-    const maxAttempts = Math.min(totalCombos, 12);
+    const maxAttempts = Math.min(Math.max(totalCombos, TTS_MAX_RETRIES), 12);
 
     let cred = nextCredential();
     let lastError;
@@ -793,7 +832,7 @@ async function handleSynthesizeAudio() {
         textInput.focus();
         return;
     }
-    if (getKeys().length === 0) {
+    if (!String(voiceSelect.value).startsWith('edge:') && getKeys().length === 0) {
         setStatus("ERROR: NO API KEY // Key & Model panel တွင် key ထည့်ပါ", "text-red-400");
         return;
     }
@@ -804,6 +843,7 @@ async function handleSynthesizeAudio() {
 
     const text = applyGlossary(rawText);
     const voice = voiceSelect.value;
+    readTtsSettings();
     loadingOverlay.classList.remove('hidden');
     customControls.classList.add('opacity-50', 'pointer-events-none');
     generateBtn.disabled = true;
@@ -815,7 +855,7 @@ async function handleSynthesizeAudio() {
     audioPlayer.pause();
 
     try {
-        const chunks = splitTextIntoChunks(text, 1200);
+        const chunks = splitTextIntoChunks(text, TTS_CHUNK_CHARS);
         const pcmBuffers = [];
         let sampleRate = 24000;
 
@@ -825,20 +865,23 @@ async function handleSynthesizeAudio() {
             chunkProgressBarContainer.classList.add('hidden');
         }
 
-        for (let i = 0; i < chunks.length; i++) {
-            if (ttsAborted) throw new Error('Stopped by user');
-            const currentChunkNum = i + 1;
-            const progressPct = Math.round((currentChunkNum / chunks.length) * 100);
-
-            loadingMainText.textContent = `SYNTHESIZING CHUNK ${currentChunkNum}/${chunks.length} (${progressPct}%)`;
-            loadingSubText.textContent = `စာပိုဒ် (${currentChunkNum}/${chunks.length}) အား နီယွန် စနစ်ဖြင့် ထုတ်လုပ်နေပါသည်...`;
-            chunkProgressBar.style.width = `${progressPct}%`;
-            setStatus(`PROCESSING CHUNK ${currentChunkNum}/${chunks.length}...`, "text-cyan-300");
-
-            const result = await synthesizeChunk(chunks[i], voice);
-            pcmBuffers.push(result.pcmBuffer);
-            if (result.sampleRate) sampleRate = result.sampleRate;
-        }
+        let nextIdx = 0, doneCount = 0, failed = false; const results = new Array(chunks.length);
+        const ttsWorker = async () => {
+            for (;;) {
+                if (ttsAborted || failed) return;
+                const i = nextIdx++; if (i >= chunks.length) return;
+                try { results[i] = await synthesizeChunk(chunks[i], voice); } catch (e) { failed = true; throw e; }
+                doneCount++;
+                const progressPct = Math.round((doneCount / chunks.length) * 100);
+                loadingMainText.textContent = `SYNTHESIZING CHUNK ${doneCount}/${chunks.length} (${progressPct}%)`;
+                loadingSubText.textContent = `စာပိုဒ် (${doneCount}/${chunks.length}) အား ထုတ်လုပ်နေပါသည်...`;
+                chunkProgressBar.style.width = `${progressPct}%`;
+                setStatus(`PROCESSING CHUNK ${doneCount}/${chunks.length}...`, "text-cyan-300");
+            }
+        };
+        await Promise.all(Array.from({ length: Math.min(TTS_WORKERS, chunks.length) }, ttsWorker));
+        if (ttsAborted) throw new Error('Stopped by user');
+        results.forEach(r => { pcmBuffers.push(r.pcmBuffer); if (r.sampleRate) sampleRate = r.sampleRate; });
 
         setStatus("STITCHING MULTI-CHUNK AUDIO STREAM...", "text-purple-300");
 
@@ -1658,9 +1701,6 @@ if (applyGlossaryOutputBtn) applyGlossaryOutputBtn.addEventListener('click', () 
 // Two tools: (1) a per-line character BUDGET sent with the translate prompt so the model condenses the wording,
 // (2) READING SPEED FIX, which uses the free gap after each cue to give fast cues more reading time (timing only).
 const LS_READING_BUDGET = 'neoyangon_reading_budget';
-// READING SPEED FIX aims a bit slower than the budget so cues stay on screen longer (0.85 = ~15% more reading time).
-// Raise toward 1 for faster, lower (e.g. 0.75) for even more time. Only cues with free gap after them can be extended.
-const READING_FIX_COMFORT = 0.85;
 const translateReadingBudgetInput = document.getElementById('translateReadingBudget');
 const fixReadingSpeedBtn = document.getElementById('fixReadingSpeedBtn');
 if (translateReadingBudgetInput) {
@@ -1701,7 +1741,7 @@ function readingSpeedRows(subs) {
 // Gives each fast cue more time by moving its END into the free gap before the next cue (never closer than 0.08 s,
 // at most 6 s of extra). Starts are never moved, so sync with the speech is untouched. Returns how many cues changed.
 function extendForReadingSpeed(subs, target) {
-    const MIN_DUR = 1.2, GAP = 0.05, MAX_EXT = 6;
+    const MIN_DUR = 1.0, GAP = 0.08, MAX_EXT = 6;
     const items = subs.map(s => {
         const t = srtCueTimes(s);
         const text = (s.translatedText !== undefined && s.translatedText !== null) ? String(s.translatedText) : '';
@@ -1731,7 +1771,7 @@ if (fixReadingSpeedBtn) fixReadingSpeedBtn.addEventListener('click', () => {
         showCheckNotice('ဘာသာပြန်ပြီး output မရှိသေးပါ — အရင် Translate လုပ်ပါ');
         return;
     }
-    const target = Math.max(8, Math.round((getReadingBudgetCps() || 14) * READING_FIX_COMFORT));
+    const target = getReadingBudgetCps() || 14;
     const before = readingSpeedRows(lastTranslatedSubs);
     const over = (rows, t) => rows.filter(r => r.cps > t).length;
     const changed = extendForReadingSpeed(lastTranslatedSubs, target);
@@ -6559,3 +6599,13 @@ if (transcribeProviderOrderSelect) {
     transcribeProviderOrderSelect.addEventListener('change', () => safeLsSet(LS_TRANSCRIBE_PROVIDER_ORDER, transcribeProviderOrderSelect.value));
     window.addEventListener('DOMContentLoaded', () => { transcribeProviderOrderSelect.value = getProviderOrder(); });
 }
+
+// Text-to-Speech tab: Edge Worker URL + Chunk Size / Workers / Timeout / Max Retries (saved in this browser)
+(function initTtsSettings() {
+    [['ttsChunkSize', 'neoyangon_tts_chunk', 1200], ['ttsWorkers', 'neoyangon_tts_workers', 3], ['ttsTimeout', 'neoyangon_tts_timeout', 60], ['ttsRetries', 'neoyangon_tts_retries', 3]].forEach(([id, k, d]) => {
+        const el = document.getElementById(id); if (!el) return;
+        el.value = safeLsGet(k) || d; el.addEventListener('change', () => safeLsSet(k, el.value));
+    });
+    const u = document.getElementById('ttsEdgeUrl');
+    if (u) { u.value = safeLsGet(LS_EDGE_URL) || ''; u.addEventListener('change', () => safeLsSet(LS_EDGE_URL, u.value.trim())); }
+})();

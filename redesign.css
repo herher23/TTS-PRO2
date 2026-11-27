@@ -104,3 +104,59 @@ html[data-theme] body nav .tab-btn.tab-active{background:var(--grad)!important;c
 .kbtn.rep{background:var(--card);color:var(--ink);border:1px solid var(--line)}
 .kedit{padding:0 14px 14px}.kedit[hidden]{display:none}
 @media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+
+/* ===== Movie Recap Studio ===== */
+.rs{display:flex;flex-direction:column;gap:12px;max-width:760px;margin:0 auto;padding-bottom:16px}
+.rs-steps{display:flex;gap:6px;overflow-x:auto;padding-bottom:2px}
+.rs-steps span{flex:0 0 auto;padding:8px 14px;border-radius:999px;background:var(--card);border:1px solid var(--line);font-size:12.5px;font-weight:600;color:var(--mute);white-space:nowrap}
+.rs-steps span.on{background:var(--grad);color:#fff;border-color:transparent}
+.rs-card{padding:14px;display:flex;flex-direction:column;gap:10px}
+.rs-card h3{font-size:16px;font-weight:700}
+.rs-row{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.rs label{font-size:12.5px;color:var(--mute);display:flex;flex-direction:column;gap:4px;min-width:0}
+.rs-note{font-size:12.5px;color:var(--mute)}
+.rs-in{width:100%;padding:9px 10px;font-size:14px}
+.rs-log{font:12px/1.5 ui-monospace,monospace;white-space:pre-wrap;max-height:140px;overflow:auto;background:var(--tint);border:1px solid var(--line);border-radius:12px;padding:8px;color:var(--ink)}
+.rs-bar{height:8px;border-radius:99px;background:var(--tint2);overflow:hidden}.rs-bar i{display:block;height:100%;width:0;background:var(--grad);transition:width .3s}
+.rs-segs{max-height:42vh;overflow:auto;display:flex;flex-direction:column;gap:8px}
+.rs-seg{background:var(--tint);border:1px solid var(--line);border-radius:12px;padding:8px;font-size:13px;color:var(--ink)}
+.rs-seg small{color:var(--mute)}.rs-seg textarea{width:100%;margin-top:6px;min-height:56px}
+.rs video,.rs audio{width:100%;border-radius:14px}
+.rs-links{display:flex;gap:8px;flex-wrap:wrap}
+a.rs-dl{display:inline-flex;margin-top:8px;padding:10px 16px;border-radius:14px;background:var(--grad);color:#fff!important;font-weight:600;font-size:13.5px;text-decoration:none}
+.rs input[type=range]{width:100%}
+
+/* Recap Studio previews */
+#rsInV{width:100%;border-radius:14px;background:#000;max-height:50vh}
+.rs-h4{font-size:13px;font-weight:700;color:var(--mute);margin-top:2px}
+.rs-prev canvas{width:100%;height:auto;border-radius:14px;background:#000;display:block}
+.rs-pc{display:flex;align-items:center;gap:8px;margin-top:8px}.rs-pc input{flex:1}
+.rs-pc span{font-size:12px;color:var(--mute);white-space:nowrap}
+html[data-theme] main button.rs-ic{min-height:38px;width:38px;padding:0;border-radius:50%;flex:none}
+
+/* ===== Recap Studio v2: step pages, render tabs ===== */
+.rs [hidden]{display:none!important}
+.rs-steps2{display:flex;flex-direction:column;gap:10px;margin-top:10px}
+.rs-step{display:flex;align-items:center;gap:12px;padding:14px;border-radius:18px;background:var(--card);border:1px solid var(--line);box-shadow:var(--shadow);cursor:pointer}
+.rs-ck{flex:none;width:44px;height:44px;border-radius:50%;background:var(--tint2);color:var(--b1);display:grid;place-items:center;font-weight:700}
+.rs-step.ok .rs-ck{background:var(--grad);color:#fff}
+.rs-st{flex:1;min-width:0}.rs-st b{display:block;font-size:16px}.rs-st small{font-size:12.5px;color:var(--mute)}
+.rs-badge{flex:none;font-size:12px;font-weight:700;padding:5px 12px;border-radius:999px;background:var(--tint2);color:var(--mute)}
+.rs-step.ok .rs-badge{background:rgba(31,157,91,.15);color:#1f9d5b}
+.rs-ph{display:flex;align-items:center;gap:12px;margin-bottom:2px}.rs-ph b{font-size:18px}
+.rs-back{width:40px;height:40px;border-radius:50%;background:var(--card);border:1px solid var(--line);display:grid;place-items:center;cursor:pointer}
+.rs-chips{display:flex;gap:8px;flex-wrap:wrap}.rs-chips span{padding:6px 12px;border-radius:999px;background:var(--tint2);font-size:12.5px;color:var(--ink)}
+.rs-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.rs-tabs{display:flex;gap:6px;overflow-x:auto;padding:4px 0}
+.rs-tab{flex:0 0 auto;padding:9px 14px;border-radius:999px;font-size:12.5px;font-weight:700;color:var(--mute);background:var(--card);border:1px solid var(--line);cursor:pointer}
+.rs-tab.on{background:var(--grad);color:#fff;border-color:transparent}
+.rs-panel{display:flex;flex-direction:column;gap:10px;padding:12px;border-radius:16px;background:var(--tint);border:1px solid var(--line)}
+.rs-tiles{display:grid;grid-template-columns:repeat(auto-fill,minmax(84px,1fr));gap:8px}
+.rs-tile{padding:14px 6px;border-radius:14px;text-align:center;font-weight:600;font-size:14px;background:var(--card);border:1px solid var(--line);color:var(--ink);cursor:pointer}
+.rs-tile.on{background:var(--grad);color:#fff;border-color:transparent}
+.rs-dots{display:flex;gap:10px}.rs-dot{width:28px;height:28px;border-radius:50%;border:2px solid var(--line);cursor:pointer}
+.rs-prev canvas{touch-action:none}
+
+/* Recap Studio: live slider number + download buttons */
+.rs .rs-val{color:var(--b1);font-weight:700;margin-left:4px}
+html[data-theme] main button.rs-dl{min-height:42px;padding:10px 16px;margin-top:8px;display:inline-flex;align-items:center;justify-content:center}
