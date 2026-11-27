@@ -1,8 +1,10 @@
 <!DOCTYPE html>
-<html lang="my" class="dark" data-theme="dark">
+<html lang="my" data-theme="light">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <script>window.addEventListener('error',function(e){var t=e.target,m=(t&&(t.src||t.href))?('LOAD FAIL: '+(t.src||t.href)):((e.message||'error')+' @ '+String(e.filename||'').split('/').pop()+':'+e.lineno+':'+e.colno);var b=document.getElementById('errBanner');if(!b){b=document.createElement('div');b.id='errBanner';b.style.cssText='position:fixed;top:0;left:0;right:0;z-index:9999;background:#b00020;color:#fff;font:12px/1.4 monospace;padding:8px;white-space:pre-wrap;word-break:break-all';(document.body||document.documentElement).appendChild(b)}b.textContent+=m+'\n'},true)</script>
+
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
     <title>NEO-YANGON 2026 | Transcribe + SRT Translator + Holographic Neural TTS Engine</title>
 
     <!-- Tailwind CSS -->
@@ -10,7 +12,7 @@
     <!-- Google Fonts for Cyberpunk & Burmese Legibility -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;600;800;900&family=Padauk:wght@400;700&family=Rajdhani:wght@400;600;700&family=Share+Tech+Mono&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&family=Orbitron:wght@400;600;800;900&family=Padauk:wght@400;700&family=Rajdhani:wght@400;600;700&family=Share+Tech+Mono&display=swap" rel="stylesheet">
     <!-- FontAwesome for futuristic HUD icons -->
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
 
@@ -43,6 +45,8 @@
     </script>
 
     <link rel="stylesheet" href="style.css">
+    <link rel="stylesheet" href="redesign.css?v=5">
+    <script>try{if(!localStorage.getItem('neoyangon_theme'))localStorage.setItem('neoyangon_theme','light')}catch(e){}</script>
 </head>
 
 <body class="min-h-screen relative flex flex-col justify-between p-3 sm:p-6 md:p-8 antialiased selection:bg-cyan-500 selection:text-black">
@@ -86,6 +90,9 @@
                     <i class="fa-solid fa-microchip text-pink-400"></i>
                     <span>MODEL: <strong id="modelBadge" class="text-white">-</strong></span>
                 </div>
+                <button id="openKeysBtn" class="px-3 py-1.5 rounded-md bg-black/50 border border-pink-500/30 text-pink-300 flex items-center gap-2">
+                    <i class="fa-solid fa-key"></i><span>API KEYS</span>
+                </button>
                 <button id="themeToggleBtn" class="px-3 py-1.5 rounded-md bg-black/50 border border-purple-500/30 text-purple-300 flex items-center gap-2 hover:border-purple-400 transition-all" title="Theme ပြောင်းရန်">
                     <i class="fa-solid fa-circle-half-stroke text-yellow-400"></i>
                     <span id="themeLabel">DARK</span>
@@ -99,19 +106,19 @@
         <div class="holo-glass holo-corner p-2 rounded-xl flex flex-wrap gap-2 border-purple-500/30">
             <button id="tabTranscribeBtn" class="tab-btn flex-1 min-w-[150px] flex items-center justify-center gap-2 px-4 py-3 rounded-lg font-orbitron font-bold text-xs sm:text-sm tracking-widest transition-all" data-view="transcribe">
                 <i class="fa-solid fa-microphone-lines"></i>
-                <span>မီဒီယာ → SRT (TRANSCRIBE)</span>
+                <span class="lbl-full">မီဒီယာ → SRT (TRANSCRIBE)</span><span class="lbl-short">မီဒီယာ → SRT</span>
             </button>
             <button id="tabTranslatorBtn" class="tab-btn flex-1 min-w-[150px] flex items-center justify-center gap-2 px-4 py-3 rounded-lg font-orbitron font-bold text-xs sm:text-sm tracking-widest transition-all" data-view="translator">
                 <i class="fa-solid fa-closed-captioning"></i>
-                <span>SRT ဘာသာပြန် (TRANSLATOR)</span>
+                <span class="lbl-full">SRT ဘာသာပြန် (TRANSLATOR)</span><span class="lbl-short">SRT ဘာသာပြန်</span>
             </button>
             <button id="tabTtsBtn" class="tab-btn flex-1 min-w-[150px] flex items-center justify-center gap-2 px-4 py-3 rounded-lg font-orbitron font-bold text-xs sm:text-sm tracking-widest transition-all" data-view="tts">
                 <i class="fa-solid fa-wave-square"></i>
-                <span>စာသား → အသံ (TEXT TO SPEECH)</span>
+                <span class="lbl-full">စာသား → အသံ (TEXT TO SPEECH)</span><span class="lbl-short">စာသား → အသံ</span>
             </button>
             <button id="tabRecapBtn" class="tab-btn flex-1 min-w-[150px] flex items-center justify-center gap-2 px-4 py-3 rounded-lg font-orbitron font-bold text-xs sm:text-sm tracking-widest transition-all" data-view="recap">
                 <i class="fa-solid fa-clapperboard"></i>
-                <span>AI RECAP STUDIO (ONE CLICK)</span>
+                <span class="lbl-full">AI RECAP STUDIO (ONE CLICK)</span><span class="lbl-short">AI Recap</span>
             </button>
         </div>
     </nav>
@@ -850,10 +857,7 @@
                 <div class="flex items-start gap-2.5 mb-4 px-1 py-2 rounded-lg bg-black/30 border border-cyan-500/20">
                     <input type="checkbox" id="transcribeWaveformSyncToggle" checked
                         class="mt-0.5 w-4 h-4 rounded accent-cyan-500 cursor-pointer flex-shrink-0">
-                    <label for="transcribeWaveformSyncToggle" class="font-mono text-[10px] text-cyan-300 uppercase tracking-widest cursor-pointer select-none leading-relaxed">
-                        WAVEFORM SYNC — Cue timing ကို actual voice onset/offset (waveform energy) အပေါ် အခြေခံပြီး ချိန်ညှိမည်၊ စာသားရှည်လျှင် ဖတ်ရန်လုံလောက်အောင် duration တိုးပေးမည်
-                        <span class="block normal-case text-cyan-500/50 mt-1">(TRANSCRIBE + AI TRANSCRIBE (GEMINI) နှစ်ခုစလုံးအတွက်)</span>
-                    </label>
+                    <label for="transcribeWaveformSyncToggle" class="font-mono text-[10px] text-cyan-300 uppercase tracking-widest cursor-pointer select-none leading-relaxed">Waveform Sync (အသံနဲ့ အချိန်ကိုက်ရန်)</label>
                 </div>
                 <div class="flex flex-wrap gap-3 justify-center">
                     <button id="clearTranscribeBtn" class="px-4 py-3 rounded-lg bg-black/40 hover:bg-red-950/50 border border-red-500/30 text-red-300 font-mono text-sm tracking-wider flex items-center justify-center gap-2 transition-all hover:border-red-400">
@@ -1140,6 +1144,18 @@
     </div>
     <!-- ═══════════════════════ END AI RECAP STUDIO VIEW ═══════════════════════ -->
 
-    <script src="script.js"></script>
+    <div id="keyModal" role="dialog" aria-modal="true" aria-labelledby="keyModalTitle">
+        <div class="sheet">
+            <div class="sheet-head"><button id="closeKeysBtn" aria-label="ပြန်ထွက်ရန်"><i class="fa-solid fa-arrow-left"></i></button><h2 id="keyModalTitle">API keys</h2></div>
+            <div id="keyRows" class="kcard"></div>
+            <p class="note" style="margin:10px 4px">Add နှိပ်ပြီး key ထည့်၊ အောက်က SAVE နှိပ်ပါ။</p>
+            <h3>Gemini · Models &amp; Save</h3>
+            <div id="keyModalGemini"></div>
+            <h3>Transcribe · Models &amp; Save</h3>
+            <div id="keyModalTranscribe"></div>
+        </div>
+    </div>
+    <script src="script.js?v=5"></script>
+    <script src="ui.js?v=5"></script>
 </body>
 </html>
