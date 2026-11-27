@@ -1658,6 +1658,9 @@ if (applyGlossaryOutputBtn) applyGlossaryOutputBtn.addEventListener('click', () 
 // Two tools: (1) a per-line character BUDGET sent with the translate prompt so the model condenses the wording,
 // (2) READING SPEED FIX, which uses the free gap after each cue to give fast cues more reading time (timing only).
 const LS_READING_BUDGET = 'neoyangon_reading_budget';
+// READING SPEED FIX aims a bit slower than the budget so cues stay on screen longer (0.85 = ~15% more reading time).
+// Raise toward 1 for faster, lower (e.g. 0.75) for even more time. Only cues with free gap after them can be extended.
+const READING_FIX_COMFORT = 0.85;
 const translateReadingBudgetInput = document.getElementById('translateReadingBudget');
 const fixReadingSpeedBtn = document.getElementById('fixReadingSpeedBtn');
 if (translateReadingBudgetInput) {
@@ -1698,7 +1701,7 @@ function readingSpeedRows(subs) {
 // Gives each fast cue more time by moving its END into the free gap before the next cue (never closer than 0.08 s,
 // at most 6 s of extra). Starts are never moved, so sync with the speech is untouched. Returns how many cues changed.
 function extendForReadingSpeed(subs, target) {
-    const MIN_DUR = 1.0, GAP = 0.08, MAX_EXT = 6;
+    const MIN_DUR = 1.2, GAP = 0.05, MAX_EXT = 6;
     const items = subs.map(s => {
         const t = srtCueTimes(s);
         const text = (s.translatedText !== undefined && s.translatedText !== null) ? String(s.translatedText) : '';
@@ -1728,7 +1731,7 @@ if (fixReadingSpeedBtn) fixReadingSpeedBtn.addEventListener('click', () => {
         showCheckNotice('ဘာသာပြန်ပြီး output မရှိသေးပါ — အရင် Translate လုပ်ပါ');
         return;
     }
-    const target = getReadingBudgetCps() || 14;
+    const target = Math.max(8, Math.round((getReadingBudgetCps() || 14) * READING_FIX_COMFORT));
     const before = readingSpeedRows(lastTranslatedSubs);
     const over = (rows, t) => rows.filter(r => r.cps > t).length;
     const changed = extendForReadingSpeed(lastTranslatedSubs, target);
