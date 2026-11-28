@@ -52,6 +52,10 @@
         <button id="rsImport" class="rs-btn" disabled>Import JSON</button></div>
       <div id="rsSegs3" class="rs-segs"></div></section>
     <section class="rs-card holo-glass" data-p="4"><div class="rs-grid" id="rsVoSet"></div>
+      <div class="rs-nara"><label>Nara voice — အခမဲ့ (ဖုန်းထဲမှာပဲ အသံထုတ်၊ server မလို)<select id="rsNara" class="rs-in">${opt('', 'မသုံးဘူး (အပေါ်က voice ကို သုံးမယ်)')}${opt('shoon', 'Shoon')}${opt('thazin', 'Thazin')}${opt('ko-banyar', 'Ko Banyar')}${opt('htet-myat', 'Htet Myat')}</select></label>
+        <p class="rs-note" id="rsNaraSt"></p>
+        <div class="rs-links"><button id="rsNaraDl" class="rs-btn" type="button">Voice ဒေါင်းလုဒ်</button><button id="rsNaraDel" class="rs-btn" type="button">ဖုန်းထဲက ဖျက်မည်</button></div>
+        <p class="rs-note">Voice တစ်ခုကို ~181 MB တစ်ခါပဲ ဒေါင်းရပြီး ဖုန်းထဲ သိမ်းထားမယ်။ ဖုန်းအလိုက် အသံထုတ်ရတာ နှေးနိုင်တယ် (အရှည်ထက် ၂ ဆလောက်)။ အင်္ဂလိပ်စာလုံးတွေ အသံမထွက်ပါ။ Nara Mini v1 © Nara Audio (Apache-2.0) · browser port: SagaPyaw</p></div>
       ${sel('pause', 'စာကြောင်းကြား နားချိန်', [['0.18', 'ပုံမှန် (0.18s)'], ['0.30', 'ရှည် (0.3s)'], ['0.08', 'တို (0.08s)'], ['0.02', 'မထည့်']])}
       ${sel('natural', 'ဆက်ဖတ်ပေး (စာကြောင်းတိုတွေကို ပေါင်းဖတ် → လူပြောသလို)', [['1', 'On (အကြံပြု)'], ['0', 'Off']])}
       ${sel('warm', 'အသံ နွေးအောင် (EQ + compressor)', [['1', 'On'], ['0', 'Off']])}
@@ -438,12 +442,26 @@
   });
   setMode(safeLsGet('neoyangon_recap_tl_mode') === 'manual' ? 'manual' : 'auto');
 
+  // ---- Nara (free, runs in the phone's browser): choose / download / delete ----
+  const naraSel = $('#rsNara'), setNaraSt = m => { $('#rsNaraSt').textContent = m || ''; };
+  async function naraStatus() {
+    const v = naraSel.value; if (!v) return '';
+    if (!window.NaraTTS) return '⚠ nara.js မတွေ့ပါ';
+    return (await NaraTTS.isCached(v)) ? '✓ ' + NaraTTS.nameOf(v) + ' ဖုန်းထဲမှာ ရှိပြီး (ပြန်မဒေါင်းရ)' : NaraTTS.nameOf(v) + ' — မဒေါင်းရသေးပါ (~181 MB၊ တစ်ခါပဲ)';
+  }
+  naraSel.value = ['shoon', 'thazin', 'ko-banyar', 'htet-myat'].includes(safeLsGet('neoyangon_recap_nara')) ? safeLsGet('neoyangon_recap_nara') : '';
+  naraSel.addEventListener('change', async () => { safeLsSet('neoyangon_recap_nara', naraSel.value); setNaraSt(await naraStatus()); });
+  naraStatus().then(setNaraSt);
+  run('#rsNaraDl', async () => { const v = naraSel.value; if (!v) return log('⚠ Nara voice အရင်ရွေးပါ'); await NaraTTS.prepare(v, setNaraSt); setNaraSt(await naraStatus()); log('✓ Nara ' + NaraTTS.nameOf(v) + ' အသင့်ဖြစ်ပြီ'); });
+  run('#rsNaraDel', async () => { const v = naraSel.value; if (!v) return; await NaraTTS.remove(v); setNaraSt(await naraStatus()); log('Nara ' + NaraTTS.nameOf(v) + ' ကို ဖုန်းထဲက ဖျက်ပြီး'); });
+
   // ---- 4 Voice Over: Text→Speech tab's voice (Edge Thiha/Nilar or Gemini) and settings ----
   run('#rsVo', async () => {
     const subs = ST.subs, total = subs.length;
     if (!total || subs.every(s => !(s.translatedText || '').trim())) return log('⚠ ဘာသာပြန်အရင်လုပ်ပါ (Step 3)');
-    readTtsSettings(); const voice = voiceSelect.value, edge = String(voice).startsWith('edge:');
-    if (edge) { if (!/^https?:\/\//.test(safeLsGet(LS_EDGE_URL) || '')) return log('⚠ Edge Worker URL ထည့်ပါ (အပေါ်ကနေရာမှာ)'); } else if (!getKeys().length) return log('⚠ Gemini key မရှိပါ');
+    readTtsSettings(); const nara = $('#rsNara').value, voice = voiceSelect.value, edge = !nara && String(voice).startsWith('edge:');
+    if (nara) { if (!window.NaraTTS) return log('⚠ nara.js မတွေ့ပါ'); } // free in-browser voice: no key / worker needed
+    else if (edge) { if (!/^https?:\/\//.test(safeLsGet(LS_EDGE_URL) || '')) return log('⚠ Edge Worker URL ထည့်ပါ (အပေါ်ကနေရာမှာ)'); } else if (!getKeys().length) return log('⚠ Gemini key မရှိပါ');
     ttsAborted = false; const speed = +speedSlider.value || 1, pause = +$('[data-k="pause"]').value;
     const natural = $('[data-k="natural"]').value === '1', warm = $('[data-k="warm"]').value === '1', pitch = +$('[data-k="vpitch"]').value || 0;
     // Edge voices: speed + pitch go to Microsoft's own prosody (keeps the voice natural, no chipmunk effect).
@@ -470,20 +488,22 @@
       for (let i = 0; i < fo && i < o.length; i++) o[o.length - 1 - i] *= i / fo;
       return { f: o, sr };
     };
-    const clips = new Array(groups.length).fill(null); let next = 0, done = 0;
+    const clips = new Array(groups.length).fill(null); let next = 0, done = 0, tNara = Date.now();
     async function worker() {
       for (;;) {
         const i = next++; if (i >= groups.length || ttsAborted) return;
         try {
-          const { pcmBuffer, sampleRate } = await synthesizeChunk(gText(groups[i]), voice);
+          const { pcmBuffer, sampleRate } = await (nara ? NaraTTS.synth(gText(groups[i])) : synthesizeChunk(gText(groups[i]), voice));
           const i16 = new Int16Array(pcmBuffer, 0, pcmBuffer.byteLength >> 1), f = new Float32Array(i16.length);
           for (let k = 0; k < i16.length; k++) f[k] = i16[k] / 32768; clips[i] = natural ? prepClip(f, sampleRate) : { f, sr: sampleRate };
         } catch (e) { log(`အပိုင်း ${i + 1} အသံ မထွက်: ${e.message}`); }
         done++; bar(done / groups.length * 0.8);
+        if (nara && (done === 1 || done % 5 === 0) && done < groups.length) { const left = (Date.now() - tNara) / done * (groups.length - done) / 60000; log('Nara: ' + done + '/' + groups.length + ' · ကျန်ခန့် ' + (left < 1 ? '<1' : Math.round(left)) + ' မိနစ်'); }
       }
     }
-    log('အသံထုတ်နေသည်... (' + voiceSelect.selectedOptions[0].text + ') · ' + groups.length + ' အပိုင်း' + (natural ? ' (ဆက်ဖတ်)' : ''));
-    await Promise.all(Array.from({ length: Math.min(TTS_WORKERS, groups.length) }, worker));
+    if (nara) { await NaraTTS.prepare(nara, setNaraSt); setNaraSt(await naraStatus()); tNara = Date.now(); }
+    log('အသံထုတ်နေသည်... (' + (nara ? 'Nara · ' + $('#rsNara').selectedOptions[0].text : voiceSelect.selectedOptions[0].text) + ') · ' + groups.length + ' အပိုင်း' + (natural ? ' (ဆက်ဖတ်)' : ''));
+    await Promise.all(Array.from({ length: Math.min(nara ? 1 : TTS_WORKERS, groups.length) }, worker));
     if (typeof setEdgeProsody === 'function') setEdgeProsody(0, 0);
     if (ttsAborted) return log('ရပ်လိုက်သည်');
     let cursor = 0; const place = []; ST.cues = []; ST.plan = [];

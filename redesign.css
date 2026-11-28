@@ -211,3 +211,5 @@ html[data-theme] #openHistoryBtn i{color:#fff!important}
 .hist-step.ok em{background:rgba(31,157,91,.15);color:#1f9d5b}
 .rs-cuepre{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin:8px 0 4px}
 .rs-cuepre .rs-tile{padding:10px 4px;font-size:12.5px}
+.rs-nara{margin:12px 0;padding:12px;border-radius:14px;border:1px dashed var(--line)}
+.rs-nara .rs-links{margin:8px 0}
