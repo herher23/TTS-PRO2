@@ -64,7 +64,13 @@
       ${sel('natural', 'ဆက်ဖတ်ပေး (စာကြောင်းတိုတွေကို ပေါင်းဖတ် → လူပြောသလို)', [['1', 'On (အကြံပြု)'], ['0', 'Off']])}
       ${sel('warm', 'အသံ နွေးအောင် (EQ + compressor)', [['1', 'On'], ['0', 'Off']])}
       ${rng('vpitch', 'Pitch (Thiha / Nilar)', -30, 30, 1, 0, 'Hz')}
-      <button id="rsVo" class="rs-btn">အသံထုတ်မည်</button><button id="rsStop" class="rs-btn rs-stop" type="button" hidden>■ Stop</button><audio id="rsAudio" controls hidden></audio><div id="rsVoLinks" class="rs-links"></div></section>
+      <div id="rsGen" class="vo-gen" hidden><div class="vo-gh"><b>Progress</b><span id="rsGenSt" class="vo-badge">Generating</span></div><div class="rs-bar"><i id="rsGenBar"></i></div><div class="vo-gl"><span id="rsGenLine"></span><span id="rsGenCnt"></span></div></div>
+      <button id="rsVo" class="rs-btn">အသံထုတ်မည်</button><button id="rsStop" class="rs-btn rs-stop" type="button" hidden>■ Stop</button>
+      <div id="rsPlayer" class="vo-player" hidden><button id="rsPl" class="vo-pl" type="button" aria-label="Play"><i class="fa-solid fa-play"></i></button><div class="vo-pi"><b id="rsPlName"></b><small id="rsPlSub"></small></div>
+        <input id="rsPlSeek" type="range" min="0" max="1000" value="0"><div class="vo-pt"><span id="rsPlCur">0:00</span><span id="rsPlDur">0:00</span></div></div>
+      <p class="rs-note" id="rsVoDone"></p>
+      <button id="rsFinal" class="rs-btn" type="button" hidden>Choose Final Voice</button><div id="rsFinalBox" class="vo-final" hidden></div>
+      <audio id="rsAudio" hidden></audio><div id="rsVoLinks" class="rs-links"></div></section>
     <section class="rs-card holo-glass" data-p="5">
       <div class="rs-prev"><canvas id="rsPrev" width="640" height="360"></canvas>
         <div class="rs-pc"><button id="rsPP" class="rs-ic" aria-label="Play"><i class="fa-solid fa-play"></i></button><input id="rsSeek" type="range" min="0" max="1000" value="0"><span id="rsT">0:00</span><button id="rsFS" class="rs-ic" aria-label="Fullscreen"><i class="fa-solid fa-expand"></i></button></div></div>
@@ -95,7 +101,7 @@
           ${rng('subStrokeW', 'Outline thickness', 0, 10, 1, 4, '')}${rng('subSize', 'Subtitle size', 60, 160, 5, 100, '%')}${rng('subY', 'Subtitle position', 60, 96, 1, 92, '%')}</div>
         <div class="rs-panel" data-t="extras" hidden><h4 class="rs-h4">EXTRAS</h4>${rng('orig', 'မူရင်းအသံ', 0, 1, 0.05, 0, 'x')}${sel('autoSrt', 'Auto-save SRT', [['1', 'On'], ['0', 'Off']])}</div>
       </div>
-      <div class="rs-tabs">${[['ratio', 'RATIO'], ['size', 'SIZE'], ['quality', 'QUALITY'], ['move', 'MOVE'], ['zoom', 'ZOOM'], ['fill', 'FILL'], ['mirror', 'MIRROR'], ['look', 'LOOK'], ['overlay', 'OVERLAY'], ['music', 'MUSIC'], ['sub', 'SUBTITLE'], ['extras', 'EXTRAS']].map(([t, n]) => `<div class="rs-tab" data-t="${t}" tabindex="0">${n}</div>`).join('')}</div>
+      <div class="rs-tabs rs-ibar">${[['ratio', 'RATIO'], ['size', 'SIZE'], ['quality', 'QUALITY'], ['move', 'MOVE'], ['zoom', 'ZOOM'], ['fill', 'FILL'], ['mirror', 'MIRROR'], ['look', 'LOOK'], ['overlay', 'OVERLAY'], ['music', 'MUSIC'], ['sub', 'SUBTITLE'], ['extras', 'EXTRAS']].map(([t, n]) => `<div class="rs-tab" data-t="${t}" tabindex="0"><i class="fa-solid ${({ ratio: 'fa-crop-simple', size: 'fa-image', quality: 'fa-gauge-high', move: 'fa-up-down-left-right', zoom: 'fa-magnifying-glass-plus', fill: 'fa-border-all', mirror: 'fa-table-columns', look: 'fa-wand-magic-sparkles', overlay: 'fa-layer-group', music: 'fa-music', sub: 'fa-closed-captioning', extras: 'fa-sliders' })[t]}"></i><span>${n}</span></div>`).join('')}</div>
       <button id="rsRender" class="rs-btn">Start render</button><button id="rsStopR" class="rs-btn" hidden>Stop</button>
       <div class="rs-note">ဗီဒီယိုကို အသံအလိုက် အမြန်/အနှေး ညှိထုတ်မှာမို့ အရှည်က အသံအရှည်အတိုင်း ဖြစ်ပါမယ်။ Render ပြီးတဲ့အထိ ဒီစာမျက်နှာကို ဖွင့်ထားပါ။</div>
       <h4 class="rs-h4">Output</h4><div id="rsOut"><div class="rs-note">Render ပြီးရင် ရလဒ်ဗီဒီယို ဒီမှာ ပေါ်မယ်။</div></div></section>
@@ -311,6 +317,13 @@
     $$('#rsPage section').forEach(s => { s.hidden = +s.dataset.p !== n; }); syncAll(); if (n === 3 && !$('#rsTlManual').hidden) refreshParts(); if (n === 5) drawPrev();
   }
   $$('.rs-step').forEach(d => click(d, () => go(+d.dataset.s)));
+  // "Next" button at the bottom of every step page: 1→2, 2→3, 3→4, 4→5; the last page goes back to the step list
+  $$('#rsPage section[data-p]').forEach(sec => {
+    const n = +sec.dataset.p, b = document.createElement('button'); b.type = 'button'; b.className = 'rs-btn rs-next';
+    b.innerHTML = n < STEPS.length ? `Next · ${STEPS[n]} <i class="fa-solid fa-arrow-right"></i>` : '<i class="fa-solid fa-check"></i> ပြီးပြီ — Step စာရင်းသို့';
+    b.addEventListener('click', () => { if (n < STEPS.length) go(n + 1); else { pv.pause(); $('#rsPage').hidden = true; $('#rsList').hidden = false; refreshList(); } window.scrollTo({ top: 0, behavior: 'smooth' }); });
+    sec.appendChild(b);
+  });
   click($('#rsBack'), () => { pv.pause(); $('#rsPage').hidden = true; $('#rsList').hidden = false; refreshList(); });
   refreshList();
 
@@ -536,8 +549,58 @@
   spEl.addEventListener('input', () => { if (!sheet.hidden) { sq('#nvSp').value = spEl.value; sq('#nvSpV').textContent = spTxt(); } paintNara(); });
   run('#rsNaraEng', async () => { setNaraSt('Engine စစ်နေသည်...'); const s = await NT().checkEngine(setNaraSt); setNaraSt('✓ Engine အဆင်ပြေ (' + s + ')'); log('✓ Nara engine OK · ' + s); });
   $('#rsStop').addEventListener('click', () => { ttsAborted = true; log('ရပ်နေသည်...'); });
-  new MutationObserver(() => { $('#rsStop').hidden = !$('#rsVo').disabled; }).observe($('#rsVo'), { attributes: true, attributeFilter: ['disabled'] });
+  new MutationObserver(() => { const dis = $('#rsVo').disabled; $('#rsStop').hidden = !dis; $('#rsGen').hidden = !dis; $('#rsVo').hidden = dis; }).observe($('#rsVo'), { attributes: true, attributeFilter: ['disabled'] });
   applyNara();
+
+  // ---- Voice Over page extras (like the reference app): progress card, player card, Regenerate, Choose Final Voice ----
+  const mm = n => String(n).replace(/\d/g, d => '၀၁၂၃၄၅၆၇၈၉'[d]);
+  const genSet = (st, done, total, line) => { $('#rsGenSt').textContent = st; $('#rsGenBar').style.width = (total ? Math.round(done / total * 100) : 0) + '%'; $('#rsGenLine').textContent = line || ''; $('#rsGenCnt').textContent = done + ' / ' + total + ' segments'; };
+  const plAu = $('#rsAudio'), voResults = []; let finalIdx = -1, finPlay = null;
+  const tm = t => fmtT(isFinite(t) ? t : 0);
+  const plPaint = () => {
+    const d = isFinite(plAu.duration) ? plAu.duration : 0, c = plAu.currentTime || 0;
+    $('#rsPlName').textContent = ST.voLabel || 'Voice over'; $('#rsPlSub').textContent = (ST.cues ? ST.cues.length : 0) + ' segments · ' + tm(c);
+    $('#rsPlSeek').value = d ? Math.round(c / d * 1000) : 0; $('#rsPlCur').textContent = tm(c); $('#rsPlDur').textContent = tm(d);
+    $('#rsPl i').className = 'fa-solid ' + (plAu.paused ? 'fa-play' : 'fa-pause');
+  };
+  ['timeupdate', 'durationchange', 'play', 'pause', 'ended'].forEach(ev => plAu.addEventListener(ev, plPaint));
+  plAu.addEventListener('loadedmetadata', () => { $('#rsPlayer').hidden = false; plPaint(); });
+  $('#rsPl').addEventListener('click', () => { if (!plAu.src) return; if (plAu.paused) plAu.play().catch(() => { /* needs a tap first */ }); else plAu.pause(); });
+  $('#rsPlSeek').addEventListener('input', () => { const d = plAu.duration; if (isFinite(d) && d) plAu.currentTime = $('#rsPlSeek').value / 1000 * d; });
+  const setVoLinks = (wav, srtBlob) => { const links = $('#rsVoLinks'); links.innerHTML = ''; dlBtn(links, 'WAV ဒေါင်းလုဒ်', () => wav, 'voiceover.wav'); dlBtn(links, 'SRT ဒေါင်းလုဒ်', () => srtBlob, 'translated.srt'); };
+  const paintFinal = () => { const b = $('#rsFinal'); b.hidden = !voResults.length; b.textContent = finalIdx >= 0 && voResults[finalIdx] ? '✓ Final Voice: ' + voResults[finalIdx].label : 'Choose Final Voice'; };
+  function stopFin() { if (finPlay) { try { finPlay.pause(); URL.revokeObjectURL(finPlay.src); } catch (e) { /* already gone */ } finPlay = null; } }
+  function renderFinal() {
+    const box = $('#rsFinalBox'); box.innerHTML = '';
+    const h = document.createElement('div'); h.className = 'vo-fh'; h.innerHTML = '<b>Choose Final Voice</b><small></small>'; h.querySelector('small').textContent = voResults.length + ' voices available'; box.appendChild(h);
+    voResults.forEach((r, i) => {
+      const row = document.createElement('div'); row.className = 'vo-fr' + (i === finalIdx ? ' on' : '');
+      row.innerHTML = '<span class="vo-rad"></span><div class="vo-fi"><b></b><small></small></div><button type="button" class="vo-fp" aria-label="Play"><i class="fa-solid fa-play"></i></button><button type="button" class="vo-fs">Select</button>';
+      row.querySelector('b').textContent = r.label; row.querySelector('small').textContent = r.sub;
+      row.querySelector('.vo-fp').addEventListener('click', () => { stopFin(); const a = new Audio(URL.createObjectURL(r.wav)); finPlay = a; a.play().catch(() => { /* needs a tap first */ }); });
+      row.querySelector('.vo-fs').addEventListener('click', () => chooseFinal(i));
+      box.appendChild(row);
+    });
+  }
+  async function chooseFinal(i) {
+    const r = voResults[i]; if (!r) return; stopFin();
+    if (i !== finalIdx) {
+      try { const ac = new (window.AudioContext || window.webkitAudioContext)(); ST.mixed = await ac.decodeAudioData(await r.wav.arrayBuffer()); ac.close(); } catch (e) { return log('⚠ အသံ ပြန်ဖွင့်မရပါ: ' + e.message); }
+      ST.cues = r.cues; ST.plan = r.plan; ST.voLabel = r.label;
+      if (ST.voUrl) URL.revokeObjectURL(ST.voUrl); ST.voUrl = URL.createObjectURL(r.wav); plAu.src = ST.voUrl;
+      setVoLinks(r.wav, r.srt); finalIdx = i; refreshList(); log('✓ Final voice: ' + r.label);
+    }
+    paintFinal(); $('#rsFinalBox').hidden = true;
+  }
+  $('#rsFinal').addEventListener('click', () => { const box = $('#rsFinalBox'); if (box.hidden) renderFinal(); else stopFin(); box.hidden = !box.hidden; });
+  // called when a voice-over finished: keep it in the "Choose Final Voice" list (last 3), show status + Regenerate
+  function voDone(label, sub, wav, srtBlob) {
+    ST.voLabel = label; voResults.push({ label, sub, wav, srt: srtBlob, cues: ST.cues, plan: ST.plan }); while (voResults.length > 3) voResults.shift();
+    finalIdx = voResults.length - 1; paintFinal(); $('#rsFinalBox').hidden = true;
+    const s = Math.round(ST.mixed.duration), m = Math.floor(s / 60);
+    $('#rsVoDone').textContent = 'ပြီးပါပြီ · line ' + mm(ST.cues.length) + ' ကြောင်း · ' + (m ? mm(m) + ' မိနစ် ' : '') + mm(s % 60) + ' စက္ကန့်';
+    $('#rsVo').innerHTML = '<i class="fa-solid fa-play"></i> Regenerate'; plPaint();
+  }
 
   // ---- 4 Voice Over: Text→Speech tab's voice (Edge Thiha/Nilar or Gemini) and settings ----
   run('#rsVo', async () => {
@@ -576,16 +639,20 @@
     async function worker() {
       for (;;) {
         const i = next++; if (i >= groups.length || ttsAborted) return;
+        genSet('Generating', done, groups.length, 'Speaking line ' + (i + 1));
         try {
           const { pcmBuffer, sampleRate } = await (nara ? NaraTTS.synth(gText(groups[i])) : synthesizeChunk(gText(groups[i]), voice));
           const i16 = new Int16Array(pcmBuffer, 0, pcmBuffer.byteLength >> 1), f = new Float32Array(i16.length);
           for (let k = 0; k < i16.length; k++) f[k] = i16[k] / 32768; clips[i] = natural ? prepClip(f, sampleRate) : { f, sr: sampleRate };
         } catch (e) { log(`အပိုင်း ${i + 1} အသံ မထွက်: ${e.message}`); }
         done++; bar(done / groups.length * 0.8);
+        genSet('Generating', done, groups.length, done < groups.length ? 'Speaking line ' + (done + 1) + (nara ? ' · ကျန်ခန့် ' + Math.max(1, Math.round((Date.now() - tNara) / done * (groups.length - done) / 60000)) + ' မိနစ်' : '') : 'Mixing...');
         if (nara && (done === 1 || done % 5 === 0) && done < groups.length) { const left = (Date.now() - tNara) / done * (groups.length - done) / 60000; log('Nara: ' + done + '/' + groups.length + ' · ကျန်ခန့် ' + (left < 1 ? '<1' : Math.round(left)) + ' မိနစ်'); }
       }
     }
+    genSet('Preparing', 0, groups.length, nara ? 'Nara voice ပြင်ဆင်နေသည်...' : '');
     if (nara) { await NaraTTS.prepare(nara, setNaraSt); setNaraSt(await naraStatus()); tNara = Date.now(); }
+    genSet('Generating', 0, groups.length, 'Speaking line 1');
     log('အသံထုတ်နေသည်... (' + (nara ? 'Nara · ' + $('#rsNara').selectedOptions[0].text : voiceSelect.selectedOptions[0].text) + ') · ' + groups.length + ' အပိုင်း' + (natural ? ' (ဆက်ဖတ်)' : ''));
     await Promise.all(Array.from({ length: Math.min(nara ? 1 : TTS_WORKERS, groups.length) }, worker));
     if (typeof setEdgeProsody === 'function') setEdgeProsody(0, 0);
@@ -619,6 +686,7 @@
     const links = $('#rsVoLinks'); links.innerHTML = '';
     dlBtn(links, 'WAV ဒေါင်းလုဒ်', () => wav, 'voiceover.wav'); dlBtn(links, 'SRT ဒေါင်းလုဒ်', () => srtBlob, 'translated.srt');
     mark(4); log(`✓ Voice over ပြီး (${place.length}/${groups.length} အပိုင်း) · ${Math.round(cursor)}s`);
+    voDone(nara ? $('#rsNara').selectedOptions[0].text : (voiceSelect.selectedOptions[0] || {}).text || 'Voice', (nara ? 'Nara' : edge ? 'Edge' : 'Gemini') + ' · ' + speed.toFixed(1) + 'x', wav, srtBlob);
   });
 
   // ---- 5 Render settings + painter (shared by preview and final render) ----
