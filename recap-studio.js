@@ -11,11 +11,20 @@
   const fmtT = t => Math.floor(t / 60) + ':' + String(Math.floor(t % 60)).padStart(2, '0');
   const STEPS = ['Video Import', 'Transcription', 'Translation', 'Voice Over', 'Render'];
   const ST = { file: null, url: '', dur: 0, w: 0, h: 0, subs: [], mixed: null, cues: [], plan: [], done: {} };
-  const S = { ratio: '16:9', size: '720', mx: 0, my: 0, zoom: 100, fill: 'blur', mirror: 'off', grain: 0, hue: 0, look: 'none', sub: '1', subSize: 100, subY: 92, subFont: 'def', subColor: '#ffffff', subStroke: '#000000', subStrokeW: 4,
+  const S = { ratio: '16:9', size: '720', quality: (['small', 'balanced', 'high'].includes(safeLsGet('neoyangon_recap_quality')) ? safeLsGet('neoyangon_recap_quality') : 'balanced'), mx: 0, my: 0, zoom: 100, fill: 'blur', mirror: 'off', grain: 0, hue: 0, look: 'none', sub: '1', subSize: 100, subY: 92, subFont: 'def', subColor: '#ffffff', subStroke: '#000000', subStrokeW: 4,
               orig: 0, musicVol: 0.15, autoSrt: '1', items: [], sel: -1, color: '#ffffff', txtFont: 'def', imgShape: 'circle' };
   const tiles = (k, vals) => `<div class="rs-tiles" data-k="${k}">${vals.map(([v, t]) => `<div class="rs-tile" data-v="${v}" tabindex="0">${t}</div>`).join('')}</div>`;
   const rng = (k, label, min, max, step, val, u) => `<label>${label} <b data-o="${k}"></b><input type="range" data-k="${k}" data-u="${u || ''}" min="${min}" max="${max}" step="${step}" value="${val}"></label>`;
   const cdots = k => `<div class="rs-cd" data-k="${k}">${['#ffffff', '#ffd34d', '#ff9f1c', '#ff5b5b', '#59d46a', '#22d3ee', '#4da3ff', '#e879f9', '#000000'].map(c => `<span data-c="${c}" style="background:${c}" tabindex="0"></span>`).join('')}<input type="color" aria-label="Custom colour"></div>`;
+  // ---- render quality presets: video bits per pixel per frame at 30 fps (the old fixed 720p value was ~4 Mbps = 182 MB for 6:14) ----
+  const QUAL = { small: { bpp: 0.04, ab: 96e3 }, balanced: { bpp: 0.065, ab: 96e3 }, high: { bpp: 0.11, ab: 128e3 } };
+  const qOf = () => QUAL[S.quality] || QUAL.balanced;
+  const vBits = (W, H) => Math.round(clamp(W * H * 30 * qOf().bpp, 0.5e6, 14e6));
+  function showQEst() {
+    const n = $('#rsQEst'); if (!n) return;
+    const [W, H] = dims({ 480: 854, 720: 1280, 1080: 1920 }[S.size] || 1280), bits = vBits(W, H) + qOf().ab, sec = ST.mixed ? ST.mixed.duration : 0;
+    n.textContent = 'ခန့်မှန်း bitrate ≈ ' + (bits / 1e6).toFixed(1) + ' Mbps' + (sec ? ' · ဖိုင်ဆိုဒ် ≈ ' + Math.round(bits * sec / 8 / 1e6) + ' MB (' + fmtT(sec) + ')' : ' · Voice Over ပြီးရင် ဖိုင်ဆိုဒ် ခန့်မှန်းပြမယ်');
+  }
   const sel = (k, label, vals) => `<label>${label}<select class="rs-in" data-k="${k}">${vals.map(([v, t]) => opt(v, t)).join('')}</select></label>`;
 
   el.innerHTML = `
@@ -27,7 +36,9 @@
     <div class="rs-ph"><div id="rsBack" class="rs-back" tabindex="0"><i class="fa-solid fa-arrow-left"></i></div><b id="rsPT"></b></div>
     <section class="rs-card holo-glass" data-p="1"><input id="rsFile" class="rs-in" type="file" accept="video/*,audio/*"><div id="rsChips" class="rs-chips"><span>ဗီဒီယို ရွေးပါ (MP4 / MOV / MKV)</span></div></section>
     <section class="rs-card holo-glass" data-p="2"><div class="rs-grid" id="rsTrSet"></div>
-      <label>Cue အရှည်<select id="rsTrLen" class="rs-in">${opt('14', 'တို (14)')}${opt('24', 'အလယ် (24)')}${opt('36', 'ရှည် (36)')}${opt('50', 'အရှည်ဆုံး (50)')}</select></label>
+      <label>Cue အရှည် (စာလုံးရေ — ကိုယ်လိုသလို ရိုက်ထည့်ပါ)<input id="rsTrLen" class="rs-in" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="3" placeholder="36" autocomplete="off"></label>
+      <div class="rs-cuepre" id="rsTrPre">${[['14', 'တို'], ['24', 'အလယ်'], ['36', 'ရှည်'], ['50', 'အရှည်ဆုံး']].map(([v, t]) => `<div class="rs-tile" data-v="${v}" tabindex="0">${t} (${v})</div>`).join('')}</div>
+      <p class="rs-note">5 – 200 ကြား ဂဏန်း ရိုက်နိုင်ပါတယ်။ ဂဏန်းသေးရင် cue တိုတိုလေးတွေ၊ ကြီးရင် ရှည်ရှည်တွေ ထွက်ပါမယ်။</p>
       <button id="rsTr" class="rs-btn">စာထုတ်မည်</button><div id="rsSegs2" class="rs-segs"></div></section>
     <section class="rs-card holo-glass" data-p="3"><div class="rs-grid" id="rsTlSet"></div>
       <div class="rs-mt" id="rsMode"><span role="button" tabindex="0" data-m="auto">Auto</span><span role="button" tabindex="0" data-m="manual">Manual</span></div>
@@ -52,6 +63,8 @@
       <div class="rs-panels">
         <div class="rs-panel" data-t="ratio"><h4 class="rs-h4">OUTPUT RATIO</h4>${tiles('ratio', [['16:9', '16:9'], ['9:16', '9:16'], ['1:1', '1:1'], ['orig', 'Original'], ['3:4', '3:4'], ['4:3', '4:3'], ['4:5', '4:5']])}</div>
         <div class="rs-panel" data-t="size" hidden><h4 class="rs-h4">SIZE</h4>${tiles('size', [['480', '480p'], ['720', '720p'], ['1080', '1080p']])}</div>
+        <div class="rs-panel" data-t="quality" hidden><h4 class="rs-h4">QUALITY</h4>${tiles('quality', [['small', 'Small'], ['balanced', 'Balanced'], ['high', 'High']])}
+          <p class="rs-note">Small = ဖိုင်အသေးဆုံး · ဖုန်းပေါ်မှာ ပေါ့ · မြန် &nbsp;|&nbsp; Balanced = အကြံပြု (ဖိုင်ဆိုဒ် သိသိသာသာ ကျ) &nbsp;|&nbsp; High = ပုံအကြည်ဆုံး · ဖိုင်ကြီး</p><p class="rs-note" id="rsQEst"></p></div>
         <div class="rs-panel" data-t="move" hidden><h4 class="rs-h4">MOVE</h4>${rng('mx', 'Left / right', -50, 50, 1, 0, '%')}${rng('my', 'Up / down', -50, 50, 1, 0, '%')}<button class="rs-btn" data-reset="mx,my">Reset</button></div>
         <div class="rs-panel" data-t="zoom" hidden><h4 class="rs-h4">ZOOM</h4>${rng('zoom', 'Zoom', 100, 200, 1, 100, '%')}<button class="rs-btn" data-reset="zoom">Reset</button></div>
         <div class="rs-panel" data-t="fill" hidden><h4 class="rs-h4">FILL</h4>${tiles('fill', [['blur', 'Blur'], ['black', 'Black'], ['crop', 'Crop']])}</div>
@@ -74,7 +87,7 @@
           ${rng('subStrokeW', 'Outline thickness', 0, 10, 1, 4, '')}${rng('subSize', 'Subtitle size', 60, 160, 5, 100, '%')}${rng('subY', 'Subtitle position', 60, 96, 1, 92, '%')}</div>
         <div class="rs-panel" data-t="extras" hidden><h4 class="rs-h4">EXTRAS</h4>${rng('orig', 'မူရင်းအသံ', 0, 1, 0.05, 0, 'x')}${sel('autoSrt', 'Auto-save SRT', [['1', 'On'], ['0', 'Off']])}</div>
       </div>
-      <div class="rs-tabs">${[['ratio', 'RATIO'], ['size', 'SIZE'], ['move', 'MOVE'], ['zoom', 'ZOOM'], ['fill', 'FILL'], ['mirror', 'MIRROR'], ['look', 'LOOK'], ['overlay', 'OVERLAY'], ['music', 'MUSIC'], ['sub', 'SUBTITLE'], ['extras', 'EXTRAS']].map(([t, n]) => `<div class="rs-tab" data-t="${t}" tabindex="0">${n}</div>`).join('')}</div>
+      <div class="rs-tabs">${[['ratio', 'RATIO'], ['size', 'SIZE'], ['quality', 'QUALITY'], ['move', 'MOVE'], ['zoom', 'ZOOM'], ['fill', 'FILL'], ['mirror', 'MIRROR'], ['look', 'LOOK'], ['overlay', 'OVERLAY'], ['music', 'MUSIC'], ['sub', 'SUBTITLE'], ['extras', 'EXTRAS']].map(([t, n]) => `<div class="rs-tab" data-t="${t}" tabindex="0">${n}</div>`).join('')}</div>
       <button id="rsRender" class="rs-btn">Start render</button><button id="rsStopR" class="rs-btn" hidden>Stop</button>
       <div class="rs-note">ဗီဒီယိုကို အသံအလိုက် အမြန်/အနှေး ညှိထုတ်မှာမို့ အရှည်က အသံအရှည်အတိုင်း ဖြစ်ပါမယ်။ Render ပြီးတဲ့အထိ ဒီစာမျက်နှာကို ဖွင့်ထားပါ။</div>
       <h4 class="rs-h4">Output</h4><div id="rsOut"><div class="rs-note">Render ပြီးရင် ရလဒ်ဗီဒီယို ဒီမှာ ပေါ်မယ်။</div></div></section>
@@ -270,11 +283,17 @@
   fillSet('#rsVoSet', [['voiceSelect', 'Voice (Thiha / Nilar / Gemini)'], ['speedSlider', 'Speed'], ['ttsEdgeUrl', 'Edge Worker URL'], ['ttsWorkers', 'Workers'], ['ttsTimeout', 'Timeout (s)'], ['ttsRetries', 'Max Retries']]);
   const syncAll = () => mirrors.forEach(f => f());
   window.addEventListener('DOMContentLoaded', () => setTimeout(syncAll, 0));
-  $('#rsTrLen').value = safeLsGet('neoyangon_recap_cue_len') || '36';
-  $('#rsTrLen').addEventListener('change', e => safeLsSet('neoyangon_recap_cue_len', e.target.value));
+  const CUE_KEY = 'neoyangon_recap_cue_len', cueEl = $('#rsTrLen');
+  const cueVal = () => clamp(parseInt(cueEl.value, 10) || 36, 5, 200);
+  const cuePaint = () => $$('#rsTrPre .rs-tile').forEach(x => x.classList.toggle('on', x.dataset.v === String(parseInt(cueEl.value, 10))));
+  cueEl.value = String(clamp(parseInt(safeLsGet(CUE_KEY), 10) || 36, 5, 200)); cuePaint();
+  cueEl.addEventListener('input', () => { const d = cueEl.value.replace(/\D/g, '').slice(0, 3); if (d !== cueEl.value) cueEl.value = d; cuePaint(); });
+  cueEl.addEventListener('change', () => { cueEl.value = String(cueVal()); cuePaint(); safeLsSet(CUE_KEY, cueEl.value); });
+  $$('#rsTrPre .rs-tile').forEach(x => click(x, () => { cueEl.value = x.dataset.v; cuePaint(); safeLsSet(CUE_KEY, cueEl.value); }));
 
   // ---- step list / pages ----
   function refreshList(extra) {
+    showQEst();
     const info = Object.assign({ 1: ST.file ? `${fmtT(ST.dur)} · ${ST.w}×${ST.h}` : 'ဗီဒီယို မရွေးရသေးပါ', 2: ST.subs.length ? ST.subs.length + ' segments' : '', 3: ST.subs.some(s => s.translatedText) ? targetLangSelect.value : '', 4: ST.mixed ? fmtT(ST.mixed.duration) : '', 5: '' }, extra);
     $$('.rs-step').forEach((d, i) => { const n = i + 1, ok = ST.done[n]; d.classList.toggle('ok', !!ok); d.querySelector('small').textContent = info[n] || ''; d.querySelector('.rs-badge').textContent = ok ? 'Completed' : 'Pending'; d.querySelector('.rs-ck').innerHTML = ok ? '<i class="fa-solid fa-check"></i>' : n; });
   }
@@ -325,7 +344,8 @@
     log('Audio decode လုပ်နေသည်...');
     const buf = await decodeMediaToAudioBuffer(ST.file, m => log(m)); ST.dur = buf.duration;
     log('စာထုတ်နေသည်...');
-    const n = +$('#rsTrLen').value, dur = { 14: [4.5, 6], 24: [6, 8], 36: [8, 10], 50: [10, 12] }[n] || [8, 10];
+    const n = cueVal(); cueEl.value = String(n); cuePaint(); safeLsSet(CUE_KEY, String(n));
+    const dur = [Math.min(20, Math.round((2.5 + n * 0.15) * 10) / 10), Math.min(24, Math.round((4 + n * 0.16) * 10) / 10)]; // same values as the old 14/24/36/50 presets, interpolated for any number
     const keep = { cjk: { ...PHRASE_OPTS.cjk }, latin: { ...PHRASE_OPTS.latin } }, keepFn = window.applyCueMaxChars;
     window.applyCueMaxChars = () => {
       Object.assign(PHRASE_OPTS.cjk, { maxChars: n, minChars: Math.min(6, Math.floor(n / 3)), maxDurSec: dur[0] });
@@ -615,7 +635,8 @@
   $$('.rs-tab').forEach(t => click(t, () => { $$('.rs-tab').forEach(x => x.classList.toggle('on', x === t)); $$('.rs-panel').forEach(p => { p.hidden = p.dataset.t !== t.dataset.t; }); }));
   $('.rs-tab').classList.add('on');
   $$('.rs-tiles').forEach(box => { const k = box.dataset.k, paintOn = () => box.querySelectorAll('.rs-tile').forEach(x => x.classList.toggle('on', x.dataset.v === S[k]));
-    box.querySelectorAll('.rs-tile').forEach(x => click(x, () => { S[k] = x.dataset.v; paintOn(); drawPrev(); })); paintOn(); });
+    box.querySelectorAll('.rs-tile').forEach(x => click(x, () => { S[k] = x.dataset.v; paintOn(); drawPrev(); if (k === 'quality') safeLsSet('neoyangon_recap_quality', S.quality); if (k === 'quality' || k === 'size' || k === 'ratio') showQEst(); })); paintOn(); });
+  showQEst();
   $$('input[data-k]').forEach(i => { const k = i.dataset.k, lab = $('[data-o="' + k + '"]'), show = () => { if (lab) lab.textContent = i.value + i.dataset.u; };
     i.addEventListener('input', () => { S[k] = +i.value; show(); drawPrev(); }); show(); });
   $$('select[data-k]').forEach(s => s.addEventListener('change', () => { S[s.dataset.k] = s.value; drawPrev(); }));
@@ -691,7 +712,7 @@
   run('#rsRender', async () => {
     if (!ST.file) return log('⚠ ဗီဒီယို မရှိပါ (Step 1)'); if (!ST.mixed) return log('⚠ Voice Over အရင်လုပ်ပါ (Step 4)');
     if (typeof MediaRecorder === 'undefined') throw new Error('ဒီ browser မှာ MediaRecorder မရှိပါ (Chrome သုံးပါ)');
-    pv.pause(); await loadFont(S.subFont); for (const id of new Set(S.items.filter(x => x.type === 'text').map(x => x.font || 'def'))) await loadFont(id); await document.fonts.ready; const L = { 480: 854, 720: 1280, 1080: 1920 }[S.size], BR = { 480: 2.5e6, 720: 4e6, 1080: 8e6 }[S.size], [W, H] = dims(L);
+    pv.pause(); await loadFont(S.subFont); for (const id of new Set(S.items.filter(x => x.type === 'text').map(x => x.font || 'def'))) await loadFont(id); await document.fonts.ready; const L = { 480: 854, 720: 1280, 1080: 1920 }[S.size], [W, H] = dims(L), BR = vBits(W, H), AB = qOf().ab;
     const cv = document.createElement('canvas'); cv.width = W; cv.height = H; const g = cv.getContext('2d');
     const v = document.createElement('video'); v.playsInline = true; v.preload = 'auto'; v.src = ST.url;
     await new Promise((ok, no) => { v.onloadeddata = ok; v.onerror = () => no(new Error('ဗီဒီယို ဖွင့်မရပါ')); });
@@ -702,7 +723,8 @@
     if (mf) { ms = ac.createBufferSource(); ms.buffer = await ac.decodeAudioData(await mf.arrayBuffer()); ms.loop = true; const gn = ac.createGain(); gn.gain.value = S.musicVol; ms.connect(gn); gn.connect(dest); }
     const stream = cv.captureStream(30); dest.stream.getAudioTracks().forEach(t => stream.addTrack(t));
     const mime = ['video/mp4;codecs=avc1.42E01E,mp4a.40.2', 'video/mp4', 'video/webm;codecs=vp9,opus', 'video/webm;codecs=vp8,opus', 'video/webm'].find(m => MediaRecorder.isTypeSupported(m)) || '';
-    const rec = new MediaRecorder(stream, mime ? { mimeType: mime, videoBitsPerSecond: BR } : { videoBitsPerSecond: BR });
+    const rec = new MediaRecorder(stream, mime ? { mimeType: mime, videoBitsPerSecond: BR, audioBitsPerSecond: AB } : { videoBitsPerSecond: BR, audioBitsPerSecond: AB });
+    log('Quality: ' + S.quality + ' · ' + W + '×' + H + ' · ' + (BR / 1e6).toFixed(1) + ' Mbps'); safeLsSet('neoyangon_recap_quality', S.quality);
     const parts = []; rec.ondataavailable = e => { if (e.data.size) parts.push(e.data); };
     const plan = ST.plan, cues = ST.cues, last = plan[plan.length - 1], total = last ? last.o + last.len : 1; let pi = -1, t0 = 0, ended = false;
     let wake = null; try { wake = await navigator.wakeLock.request('screen'); } catch (e) { /* optional */ }
