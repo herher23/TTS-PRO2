@@ -12,7 +12,7 @@
   const STEPS = ['Video Import', 'Transcription', 'Translation', 'Voice Over', 'Render'];
   const ST = { file: null, url: '', dur: 0, w: 0, h: 0, subs: [], mixed: null, cues: [], plan: [], done: {} };
   const S = { ratio: '16:9', size: '720', quality: (['small', 'balanced', 'high'].includes(safeLsGet('neoyangon_recap_quality')) ? safeLsGet('neoyangon_recap_quality') : 'balanced'), mx: 0, my: 0, zoom: 100, fill: 'blur', mirror: 'off', grain: 0, hue: 0, look: 'none', sub: '1', subSize: 100, subY: 92, subFont: 'def', subColor: '#ffffff', subStroke: '#000000', subStrokeW: 4,
-              orig: 0, musicVol: 0.15, autoSrt: '1', items: [], sel: -1, color: '#ffffff', txtFont: 'def', imgShape: 'circle' };
+              orig: 0, musicVol: 0.15, autoSrt: '1', items: [], sel: -1, color: '#ffffff', txtFont: 'def', imgShape: 'circle', wm: '0', wmText: '', wmOp: 55, wmSpeed: 100, wmSize: 100, wmLogo: '0', wmLogoImg: null };
   const tiles = (k, vals) => `<div class="rs-tiles" data-k="${k}">${vals.map(([v, t]) => `<div class="rs-tile" data-v="${v}" tabindex="0">${t}</div>`).join('')}</div>`;
   const rng = (k, label, min, max, step, val, u) => `<label>${label} <b data-o="${k}"></b><input type="range" data-k="${k}" data-u="${u || ''}" min="${min}" max="${max}" step="${step}" value="${val}"></label>`;
   const cdots = k => `<div class="rs-cd" data-k="${k}">${['#ffffff', '#ffd34d', '#ff9f1c', '#ff5b5b', '#59d46a', '#22d3ee', '#4da3ff', '#e879f9', '#000000'].map(c => `<span data-c="${c}" style="background:${c}" tabindex="0"></span>`).join('')}<input type="color" aria-label="Custom colour"></div>`;
@@ -99,7 +99,8 @@
           <h4 class="rs-h4">TEXT COLOR</h4>${cdots('subColor')}
           <h4 class="rs-h4">OUTLINE COLOR</h4>${cdots('subStroke')}
           ${rng('subStrokeW', 'Outline thickness', 0, 10, 1, 4, '')}${rng('subSize', 'Subtitle size', 60, 160, 5, 100, '%')}${rng('subY', 'Subtitle position', 60, 96, 1, 92, '%')}</div>
-        <div class="rs-panel" data-t="extras" hidden><h4 class="rs-h4">EXTRAS</h4>${rng('orig', 'မူရင်းအသံ', 0, 1, 0.05, 0, 'x')}${sel('autoSrt', 'Auto-save SRT', [['1', 'On'], ['0', 'Off']])}</div>
+        <div class="rs-panel" data-t="extras" hidden><h4 class="rs-h4">EXTRAS</h4>${rng('orig', 'မူရင်းအသံ', 0, 1, 0.05, 0, 'x')}${sel('autoSrt', 'Auto-save SRT', [['1', 'On'], ['0', 'Off']])}
+          <div class="rs-wmrow" id="rsWmOpen" tabindex="0"><div><b>Watermarks</b><small id="rsWmSum">Off</small></div><i class="fa-solid fa-chevron-right"></i></div></div>
       </div>
       <div class="rs-tabs rs-ibar">${[['ratio', 'RATIO'], ['size', 'SIZE'], ['quality', 'QUALITY'], ['move', 'MOVE'], ['zoom', 'ZOOM'], ['fill', 'FILL'], ['mirror', 'MIRROR'], ['look', 'LOOK'], ['overlay', 'OVERLAY'], ['music', 'MUSIC'], ['sub', 'SUBTITLE'], ['extras', 'EXTRAS']].map(([t, n]) => `<div class="rs-tab" data-t="${t}" tabindex="0"><i class="fa-solid ${({ ratio: 'fa-crop-simple', size: 'fa-image', quality: 'fa-gauge-high', move: 'fa-up-down-left-right', zoom: 'fa-magnifying-glass-plus', fill: 'fa-border-all', mirror: 'fa-table-columns', look: 'fa-wand-magic-sparkles', overlay: 'fa-layer-group', music: 'fa-music', sub: 'fa-closed-captioning', extras: 'fa-sliders' })[t]}"></i><span>${n}</span></div>`).join('')}</div>
       <button id="rsRender" class="rs-btn">Start render</button><button id="rsStopR" class="rs-btn" hidden>Stop</button>
@@ -107,6 +108,17 @@
       <h4 class="rs-h4">Output</h4><div id="rsOut"><div class="rs-note">Render ပြီးရင် ရလဒ်ဗီဒီယို ဒီမှာ ပေါ်မယ်။</div></div></section>
   </div>
   <div class="rs-pg" id="rsPg" hidden><div class="rs-pgh"><b id="rsPgL">Progress</b><span id="rsPgN">0%</span></div><div class="rs-bar"><i id="rsBar"></i></div><small id="rsPgD"></small></div>
+  <div id="rsWmSheet" class="rs-sheet" hidden><div class="rs-sbox">
+    <div class="rs-handle"></div>
+    <div class="rs-sh"><h3>Watermarks</h3><div id="rsWmX" class="rs-x" tabindex="0"><i class="fa-solid fa-xmark"></i></div></div>
+    <p class="rs-sd">Burned into the video. Preview shows exactly where they land.</p>
+    <div class="rs-wcard"><div class="rs-wt"><div><b>Text watermark</b><small>Moves randomly inside the video</small></div><label class="rs-sw"><input type="checkbox" id="rsWmOn"><i></i></label></div>
+      <input id="rsWmText" class="rs-in rs-wi" type="text" placeholder="e.g. SPEED / Channel name">
+      <div class="rs-sr"><span>Opacity</span><input type="range" data-k="wmOp" data-u="%" min="10" max="100" step="5" value="55"><b class="rs-pill" data-o="wmOp"></b></div><div class="rs-sr"><span>Speed</span><input type="range" data-k="wmSpeed" data-u="%" min="20" max="300" step="10" value="100"><b class="rs-pill" data-o="wmSpeed"></b></div><div class="rs-sr"><span>Text size</span><input type="range" data-k="wmSize" data-u="%" min="50" max="200" step="5" value="100"><b class="rs-pill" data-o="wmSize"></b></div></div>
+    <div class="rs-wcard"><div class="rs-wt"><div><b>Logo watermark</b><small id="rsLgHint">Choose a logo image first</small></div><label class="rs-sw"><input type="checkbox" id="rsLgOn"><i></i></label></div>
+      <input id="rsLgFile" class="rs-in" type="file" accept="image/*"></div>
+    <button id="rsWmDone" class="rs-btn">Done</button>
+  </div></div>
   <div id="rsLog" class="rs-log">ဗီဒီယိုထဲကလို အဆင့်တစ်ခုချင်း ဝင်လုပ်ပါ။ Setting တွေက Media→SRT / SRT ဘာသာပြန် / စာသား→အသံ tab တွေနဲ့ ချိတ်ထားပါတယ်။</div>`;
 
   const log = m => { const b = $('#rsLog'); b.textContent += '\n' + m; b.scrollTop = b.scrollHeight; };
@@ -758,6 +770,13 @@
     else { w = W * 0.6 * it.size; h = H * 0.12 * it.size; }
     return { x0: it.x * W - w / 2, y0: it.y * H - h / 2, x1: it.x * W + w / 2, y1: it.y * H + h / 2, w, h };
   }
+  // Text watermark: glides between random spots (a new target every ~5s, faster with Speed); same path in preview and render
+  const wmHash = (k, n) => { const x = Math.sin(k * 127.1 + n * 311.7) * 43758.5453; return x - Math.floor(x); };
+  const wmPt = k => [0.14 + 0.72 * wmHash(k, 1), 0.12 + 0.76 * wmHash(k, 2)];
+  function wmPos(t, ph = 0) {
+    const T = 5 / Math.max(0.2, S.wmSpeed / 100), k = Math.floor(t / T) + ph, f = t / T - Math.floor(t / T), e = f * f * (3 - 2 * f), a = wmPt(k), b = wmPt(k + 1);
+    return [a[0] + (b[0] - a[0]) * e, a[1] + (b[1] - a[1]) * e];
+  }
   function paint(g, W, H, v, o) {
     const vw = v.videoWidth, vh = v.videoHeight; if (!vw) return;
     g.fillStyle = '#000'; g.fillRect(0, 0, W, H); const f = filterStr();
@@ -781,6 +800,16 @@
       else { const fs = H * 0.045 * it.size; g.font = itemFont(it, fs); g.lineWidth = fs / 5; g.strokeStyle = it.color === '#000000' ? '#fff' : '#000'; g.fillStyle = it.color; g.strokeText(it.text, it.x * W, b.y1 - fs * 0.3); g.fillText(it.text, it.x * W, b.y1 - fs * 0.3); }
       g.globalAlpha = 1;
     });
+    if (S.wm === '1' && S.wmText && o.t !== undefined) {
+      const fs = H * 0.05 * S.wmSize / 100, [px, py] = wmPos(o.t);
+      g.save(); g.globalAlpha = S.wmOp / 100; g.font = `700 ${fs}px ${FONT}`; g.textAlign = 'center'; g.lineJoin = 'round';
+      const hw = g.measureText(S.wmText).width / 2 + 8, x = clamp(px * W, hw, W - hw), y = clamp(py * H, fs, H - fs * 0.4);
+      g.lineWidth = fs / 10; g.strokeStyle = 'rgba(0,0,0,.65)'; g.fillStyle = '#fff'; g.strokeText(S.wmText, x, y); g.fillText(S.wmText, x, y); g.restore();
+    }
+    if (S.wmLogo === '1' && S.wmLogoImg && o.t !== undefined) {
+      const im = S.wmLogoImg, lw = W * 0.16 * S.wmSize / 100, lh = lw * im.naturalHeight / (im.naturalWidth || 1), [qx, qy] = wmPos(o.t, 7);
+      g.save(); g.globalAlpha = S.wmOp / 100; g.drawImage(im, clamp(qx * W - lw / 2, 4, W - lw - 4), clamp(qy * H - lh / 2, 4, H - lh - 4), lw, lh); g.restore();
+    }
     if (o.sel && S.sel >= 0 && S.items[S.sel]) { const b = bounds(S.items[S.sel], W, H, g); g.save(); g.setLineDash([8, 6]); g.lineWidth = 2; g.strokeStyle = '#ff7a2f'; g.strokeRect(b.x0, b.y0, b.w, b.h); g.restore(); }
     if (o.text) {
       const fs = Math.round(H * (H > W ? 0.03 : 0.042) * S.subSize / 100), lh = fs * 1.35;
@@ -803,7 +832,7 @@
     if (!pv.videoWidth || $('#rsPage').hidden) return;
     const [W, H] = dims(640); if (pc.width !== W || pc.height !== H) { pc.width = W; pc.height = H; }
     const t = pv.currentTime, k = S.sub === '1' ? ST.plan.findIndex(x => t >= x.va && t < x.vb) : -1;
-    paint(pg, W, H, pv, { mirror: mirrorAt(Math.max(k, 0)), text: k >= 0 ? ST.cues[k].text : '', sel: true });
+    paint(pg, W, H, pv, { mirror: mirrorAt(Math.max(k, 0)), text: k >= 0 ? ST.cues[k].text : '', sel: true, t });
     const d = pv.duration || 1; if (!seeking) $('#rsSeek').value = Math.round(t / d * 1000); $('#rsT').textContent = fmtT(t) + ' / ' + fmtT(d);
   }
   const ploop = () => { drawPrev(); praf = pv.paused ? 0 : requestAnimationFrame(ploop); };
@@ -895,6 +924,19 @@
   buildFontSel();
 
   const add = it => { S.items.push(Object.assign({ x: 0.5, y: 0.5, size: 1, op: 1 }, it)); select(S.items.length - 1); };
+  $('#rsWmText').addEventListener('input', e => { S.wmText = e.target.value; wmSum(); drawPrev(); });
+  const sheetEl = $('#rsWmSheet'), wmSum = () => { const a = []; if (S.wm === '1') a.push('Text' + (S.wmText ? ' “' + S.wmText + '”' : '')); if (S.wmLogo === '1') a.push('Logo'); $('#rsWmSum').textContent = a.length ? a.join(' · ') : 'Off'; };
+  const wmShow = on => { sheetEl.hidden = !on; if (!on) wmSum(); };
+  click($('#rsWmOpen'), () => wmShow(true)); click($('#rsWmX'), () => wmShow(false)); $('#rsWmDone').addEventListener('click', () => wmShow(false));
+  sheetEl.addEventListener('click', e => { if (e.target === sheetEl) wmShow(false); });
+  $('#rsWmOn').addEventListener('change', e => { S.wm = e.target.checked ? '1' : '0'; wmSum(); drawPrev(); });
+  $('#rsLgOn').disabled = true;
+  $('#rsLgOn').addEventListener('change', e => { S.wmLogo = e.target.checked ? '1' : '0'; wmSum(); drawPrev(); });
+  $('#rsLgFile').addEventListener('change', e => {
+    const f = e.target.files[0]; if (!f) return; const img = new Image();
+    img.onload = () => { S.wmLogoImg = img; $('#rsLgOn').disabled = false; $('#rsLgOn').checked = true; S.wmLogo = '1'; $('#rsLgHint').textContent = f.name; wmSum(); drawPrev(); };
+    img.src = URL.createObjectURL(f);
+  });
   $('#rsAddTxt').addEventListener('click', async () => { const t = $('#rsTxt').value.trim(); if (t) { add({ type: 'text', text: t, color: S.color, y: 0.1, font: S.txtFont }); $('#rsTxt').value = ''; await loadFont(S.txtFont); drawPrev(); } });
   $('#rsAddBlur').addEventListener('click', () => add({ type: 'blur', y: 0.9 }));
   $('#rsImg').addEventListener('change', e => { const f = e.target.files[0]; if (!f) return; const img = new Image(); img.onload = () => add({ type: 'img', img, size: 0.8, shape: S.imgShape }); img.src = URL.createObjectURL(f); });
@@ -930,7 +972,7 @@
       while (pi + 1 < plan.length && ot >= plan[pi + 1].o) { const p = plan[++pi]; v.playbackRate = clamp((p.vb - p.va) / p.len, 0.5, 3); if (Math.abs(v.currentTime - p.va) > 0.6) v.currentTime = p.va; }
       if (ot > total + 0.3) return finish();
       const cu = S.sub === '1' ? cues.find(x => ot >= x.a && ot < x.b) : null;
-      paint(g, W, H, v, { mirror: mirrorAt(Math.max(pi, 0)), text: cu ? cu.text : '', sel: false }); prog('Step 5 · Render', clamp(ot / total, 0, 1), fmtT(Math.max(ot, 0)) + ' / ' + fmtT(total) + ' · ကျန် ' + fmtT(Math.max(total - ot, 0))); requestAnimationFrame(frame);
+      paint(g, W, H, v, { mirror: mirrorAt(Math.max(pi, 0)), text: cu ? cu.text : '', sel: false, t: Math.max(ot, 0) }); prog('Step 5 · Render', clamp(ot / total, 0, 1), fmtT(Math.max(ot, 0)) + ' / ' + fmtT(total) + ' · ကျန် ' + fmtT(Math.max(total - ot, 0))); requestAnimationFrame(frame);
     }
     log('Render စတင်ပြီ — စာမျက်နှာကို မပိတ်ပါနဲ့'); rec.start(1000);
     t0 = ac.currentTime + 0.15; vs.start(t0); ms && ms.start(t0); await v.play(); frame();
