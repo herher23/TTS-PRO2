@@ -27,6 +27,13 @@
   }
   const sel = (k, label, vals) => `<label>${label}<select class="rs-in" data-k="${k}">${vals.map(([v, t]) => opt(v, t)).join('')}</select></label>`;
 
+  // LOOK > Filter presets (CSS filter strings: same result in preview, thumbnails and final render)
+  const FILTERS = [
+    ['none', 'None', ''], ['warm', 'Warm', 'sepia(.3) saturate(1.25)'], ['cool', 'Cool', 'sepia(.25) hue-rotate(165deg) saturate(.9) brightness(1.03)'], ['vivid', 'Vivid', 'saturate(1.6) contrast(1.12)'],
+    ['film', 'Film', 'sepia(.18) contrast(.94) saturate(.85) brightness(1.04)'], ['soft', 'Soft', 'contrast(.86) brightness(1.09) saturate(.92)'], ['moody', 'Moody', 'contrast(1.28) brightness(.82) saturate(.82)'], ['bw', 'B&W', 'grayscale(1) contrast(1.05)'],
+    ['rich', 'Rich Color', 'saturate(1.38) contrast(1.18) brightness(.97)'], ['moonshine', 'Moonshine', 'sepia(.35) hue-rotate(140deg) saturate(.75) brightness(1.08)'], ['clear', 'Clear', 'contrast(1.1) brightness(1.07) saturate(1.1)']
+  ];
+
   el.innerHTML = `
   <div id="rsList">
     <video id="rsInV" controls playsinline hidden></video>
@@ -83,7 +90,13 @@
         <div class="rs-panel" data-t="zoom" hidden><h4 class="rs-h4">ZOOM</h4>${rng('zoom', 'Zoom', 100, 200, 1, 100, '%')}<button class="rs-btn" data-reset="zoom">Reset</button></div>
         <div class="rs-panel" data-t="fill" hidden><h4 class="rs-h4">FILL</h4>${tiles('fill', [['blur', 'Blur'], ['black', 'Black'], ['crop', 'Crop']])}</div>
         <div class="rs-panel" data-t="mirror" hidden><h4 class="rs-h4">MIRROR</h4>${tiles('mirror', [['off', 'Off'], ['full', 'Full'], ['random', 'Random']])}</div>
-        <div class="rs-panel" data-t="look" hidden><h4 class="rs-h4">LOOK</h4>${rng('grain', 'Grain', 0, 100, 1, 0, '')}${rng('hue', 'Hue', 0, 360, 1, 0, '°')}${sel('look', 'Filter', [['none', 'None'], ['warm', 'Warm'], ['cool', 'Cool'], ['bw', 'Black & white'], ['vivid', 'Vivid']])}</div>
+        <div class="rs-panel lk" data-t="look" hidden>
+          <div class="lk-top"><div class="lk-seg">${[['grain', 'Grain'], ['hue', 'Hue'], ['filter', 'Filter']].map(([v, t], i) => `<button type="button" class="lk-sg${i ? '' : ' on'}" data-lk="${v}">${t}</button>`).join('')}</div><button type="button" class="lk-reset">RESET</button></div>
+          ${[['grain', 0, 100], ['hue', -180, 180]].map(([k, min, max]) => `<div class="lk-view" data-view="${k}"${k === 'hue' ? ' hidden' : ''}>
+            <div class="lk-row"><button type="button" class="lk-step" data-step="-1" data-for="${k}" aria-label="${k} လျှော့">−</button><div class="lk-range lk-${k}"><input type="range" data-lkr="${k}" min="${min}" max="${max}" step="1" value="0" aria-label="${k}"></div><button type="button" class="lk-step" data-step="1" data-for="${k}" aria-label="${k} တိုး">+</button></div>
+            ${k === 'hue' ? '<div class="lk-scale"><span>−180°</span><span>0</span><span>+180°</span></div>' : ''}<output class="lk-num" data-num="${k}"></output>
+            ${k === 'grain' ? '<div class="lk-cap">Film-like noise, moves every frame · 0 = off</div>' : ''}</div>`).join('')}
+          <div class="lk-view lk-grid" data-view="filter" hidden>${FILTERS.map(([v, t]) => `<button type="button" class="lk-f" data-f="${v}"><canvas width="144" height="108"></canvas><span>${t}</span></button>`).join('')}</div></div>
         <div class="rs-panel" data-t="overlay" hidden><h4 class="rs-h4">OVERLAY</h4>
           <label>Text Font<select id="rsTxtFont" class="rs-in"></select></label>
           <div class="rs-row"><input id="rsTxt" class="rs-in" type="text" placeholder="Enter text..."><button id="rsAddTxt" class="rs-btn">+ Text</button></div>
@@ -726,7 +739,7 @@
   // ---- 5 Render settings + painter (shared by preview and final render) ----
   const noise = document.createElement('canvas'); noise.width = noise.height = 256;
   { const g = noise.getContext('2d'), d = g.createImageData(256, 256); for (let i = 0; i < d.data.length; i += 4) { const v = Math.random() * 255; d.data[i] = d.data[i + 1] = d.data[i + 2] = v; d.data[i + 3] = 255; } g.putImageData(d, 0, 0); }
-  const LOOKS = { none: '', warm: 'sepia(.35) saturate(1.2)', cool: 'hue-rotate(-15deg) saturate(1.1)', bw: 'grayscale(1)', vivid: 'saturate(1.6) contrast(1.1)' };
+  const LOOKS = Object.fromEntries(FILTERS.map(([v, , css]) => [v, css]));
   const filterStr = () => [S.hue ? `hue-rotate(${S.hue}deg)` : '', LOOKS[S.look]].filter(Boolean).join(' ');
   const FONT = "Padauk,'Myanmar Text',Inter,sans-serif";
   // Subtitle fonts. Built-in ones are loaded from the fonts/ folder next to index.html, only when picked.
@@ -777,6 +790,12 @@
     const T = 5 / Math.max(0.2, S.wmSpeed / 100), k = Math.floor(t / T) + ph, f = t / T - Math.floor(t / T), e = f * f * (3 - 2 * f), a = wmPt(k), b = wmPt(k + 1);
     return [a[0] + (b[0] - a[0]) * e, a[1] + (b[1] - a[1]) * e];
   }
+  // fine film grain: tile the noise and shift it on every painted frame; 'overlay' keeps the picture's brightness
+  function drawGrain(g, W, H) {
+    const k = Math.max(0.5, Math.min(W, H) / 640), x = Math.floor(Math.random() * 256), y = Math.floor(Math.random() * 256);
+    g.save(); g.globalCompositeOperation = 'overlay'; g.globalAlpha = S.grain / 100 * 0.6; g.scale(k, k); g.translate(-x, -y);
+    g.fillStyle = g.createPattern(noise, 'repeat'); g.fillRect(x, y, W / k, H / k); g.restore();
+  }
   function paint(g, W, H, v, o) {
     const vw = v.videoWidth, vh = v.videoHeight; if (!vw) return;
     g.fillStyle = '#000'; g.fillRect(0, 0, W, H); const f = filterStr();
@@ -784,7 +803,7 @@
     g.filter = f || 'none';
     const s2 = (S.fill === 'crop' ? Math.max(W / vw, H / vh) : Math.min(W / vw, H / vh)) * S.zoom / 100, dw = vw * s2, dh = vh * s2;
     g.save(); if (o.mirror) { g.translate(W, 0); g.scale(-1, 1); } g.drawImage(v, (W - dw) / 2 + S.mx / 100 * W, (H - dh) / 2 + S.my / 100 * H, dw, dh); g.restore(); g.filter = 'none';
-    if (S.grain > 0) { g.globalAlpha = S.grain / 100 * 0.35; g.drawImage(noise, Math.random() * 128, Math.random() * 128, 128, 128, 0, 0, W, H); g.globalAlpha = 1; }
+    if (S.grain > 0) drawGrain(g, W, H);
     S.items.forEach(it => { if (it.type !== 'blur') return; const b = bounds(it, W, H, g); g.save(); g.beginPath(); g.rect(b.x0, b.y0, b.w, b.h); g.clip(); g.filter = `blur(${Math.round(W / 40)}px)`; g.drawImage(g.canvas, 0, 0); g.restore(); });
     g.textAlign = 'center'; g.lineJoin = 'round';
     S.items.forEach(it => {
@@ -864,6 +883,32 @@
     i.addEventListener('input', () => { S[k] = +i.value; show(); drawPrev(); }); show(); });
   $$('select[data-k]').forEach(s => s.addEventListener('change', () => { S[s.dataset.k] = s.value; drawPrev(); }));
   $$('[data-reset]').forEach(b => b.addEventListener('click', () => b.dataset.reset.split(',').forEach(k => { const i = $('input[data-k="' + k + '"]'); i.value = k === 'zoom' ? 100 : 0; i.dispatchEvent(new Event('input')); })));
+  // ---- LOOK: Grain / Hue / Filter ----
+  let lkTab = 'grain';
+  const lkText = k => k === 'grain' ? String(S.grain) : (S.hue > 0 ? '+' : S.hue < 0 ? '−' : '') + Math.abs(S.hue) + '°';
+  const lkSet = (k, val) => { const i = $('[data-lkr="' + k + '"]'); S[k] = clamp(Math.round(+val), +i.min, +i.max); i.value = S[k]; $('[data-num="' + k + '"]').textContent = lkText(k); drawPrev(); };
+  const lkMark = () => $$('.lk-f').forEach(b => { const on = b.dataset.f === S.look; b.classList.toggle('on', on); b.setAttribute('aria-pressed', on); });
+  // thumbnails show the current frame of the user's own video with each filter applied
+  function lkThumbs() {
+    if (lkTab !== 'filter') return;
+    $$('.lk-f').forEach(b => {
+      const c = b.querySelector('canvas'), g = c.getContext('2d'), W = c.width, H = c.height;
+      g.filter = LOOKS[b.dataset.f] || 'none';
+      if (pv.videoWidth && pv.readyState >= 2) { const k = Math.max(W / pv.videoWidth, H / pv.videoHeight), w = pv.videoWidth * k, h = pv.videoHeight * k; g.drawImage(pv, (W - w) / 2, (H - h) / 2, w, h); }
+      else { const gr = g.createLinearGradient(0, 0, W, H); ['#1d4e89', '#7fb3d5', '#e8b98a', '#a4452f', '#26331f'].forEach((col, i) => gr.addColorStop(i / 4, col)); g.fillStyle = gr; g.fillRect(0, 0, W, H); }
+      g.filter = 'none';
+    });
+  }
+  $$('.lk-sg').forEach(b => b.addEventListener('click', () => {
+    lkTab = b.dataset.lk; $$('.lk-sg').forEach(x => x.classList.toggle('on', x === b)); $$('.lk-view').forEach(v => { v.hidden = v.dataset.view !== lkTab; }); $('.lk').scrollTop = 0; lkThumbs();
+  }));
+  $$('[data-lkr]').forEach(i => { i.addEventListener('input', () => lkSet(i.dataset.lkr, i.value)); lkSet(i.dataset.lkr, 0); });
+  $$('.lk-step').forEach(b => b.addEventListener('click', () => lkSet(b.dataset.for, S[b.dataset.for] + +b.dataset.step)));
+  $$('.lk-f').forEach(b => b.addEventListener('click', () => { S.look = b.dataset.f; lkMark(); drawPrev(); }));
+  $('.lk-reset').addEventListener('click', () => { if (lkTab === 'filter') { S.look = 'none'; lkMark(); drawPrev(); } else lkSet(lkTab, 0); });
+  click($('.rs-tab[data-t="look"]'), lkThumbs);
+  pv.addEventListener('seeked', lkThumbs);
+  lkMark();
   $$('.rs-dot').forEach(d => d.addEventListener('click', () => { S.color = d.dataset.c; const it = S.items[S.sel]; if (it && it.type === 'text') { it.color = S.color; drawPrev(); } }));
   // ---- subtitle style: font + colours (saved on this phone) ----
   const STYLE_KEY = 'neoyangon_recap_substyle', STYLE_KEYS = ['subFont', 'subColor', 'subStroke', 'subStrokeW', 'subSize', 'subY'];

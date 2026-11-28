@@ -320,3 +320,38 @@ html[data-theme] main button.vo-fs{flex:none;min-height:38px;padding:0 12px;back
 .rs-sr input[type=range]{width:100%}
 .rs-pill{justify-self:end;min-width:64px;text-align:center;padding:9px 6px;border-radius:14px;background:var(--tint2);color:var(--ink);font-size:15px;font-weight:600}
 .rs-sheet .rs-btn{padding:16px;font-size:19px;border-radius:999px}
+
+/* ===== Step 5 LOOK: Grain / Hue / Filter ===== */
+.rs .rs-panel.lk{height:208px;overflow-y:auto;overscroll-behavior:contain;gap:12px;scrollbar-width:none}
+.lk::-webkit-scrollbar{display:none}
+.lk>*{flex:none}
+.lk-top{display:flex;align-items:center;gap:8px}
+.lk-seg{flex:1;display:grid;grid-template-columns:repeat(3,1fr);gap:4px;padding:3px;border-radius:14px;border:1px solid var(--line)}
+html[data-theme] main .lk button.lk-sg,html[data-theme] main .lk button.lk-reset,html[data-theme] main .lk button.lk-step,html[data-theme] main .lk button.lk-f{background:transparent!important;border:0!important;box-shadow:none!important;color:var(--mute)!important;cursor:pointer}
+html[data-theme] main .lk button.lk-sg{min-height:36px;border-radius:11px;padding:0}
+html[data-theme] main .lk button.lk-sg.on{background:var(--grad)!important;color:#fff!important}
+html[data-theme] main .lk button.lk-reset{flex:none;min-height:36px;padding:0 4px;font-size:12px;color:var(--b2)!important}
+.lk-view{display:flex;flex-direction:column;gap:8px}
+.lk-row{display:flex;align-items:center;gap:12px}
+html[data-theme] main .lk button.lk-step{flex:none;width:36px;height:36px;min-height:36px;padding:0;border:1px solid var(--line)!important;border-radius:50%;color:var(--b2)!important;font-size:19px;line-height:1}
+.lk-range{position:relative;flex:1;min-width:0;display:flex;align-items:center}
+.lk-grain::after{content:'';position:absolute;left:10px;right:10px;top:calc(50% + 8px);height:5px;background:repeating-linear-gradient(90deg,var(--mute) 0 1px,transparent 1px calc(10% - .1px));opacity:.35;pointer-events:none}
+.rs .lk-range input[type=range]{-webkit-appearance:none;appearance:none;display:block;width:100%;height:32px;margin:0;padding:0;background:transparent;border:0;outline:0!important}
+.lk-range input::-webkit-slider-runnable-track{height:4px;border-radius:9px;background:var(--line)}
+.lk-range input::-moz-range-track{height:4px;border-radius:9px;background:var(--line)}
+.lk-hue input::-webkit-slider-runnable-track{background:linear-gradient(90deg,#5ac8fa,#8b5cf6,#ec4899,#ef4444,#f59e0b,#84cc16,#14b8a6,#38bdf8)}
+.lk-hue input::-moz-range-track{background:linear-gradient(90deg,#5ac8fa,#8b5cf6,#ec4899,#ef4444,#f59e0b,#84cc16,#14b8a6,#38bdf8)}
+.lk-range input::-webkit-slider-thumb{-webkit-appearance:none;width:20px;height:20px;margin-top:-8px;border-radius:50%;background:var(--card);border:3px solid var(--b2);box-shadow:0 0 0 4px rgba(229,50,45,.14)}
+.lk-range input::-moz-range-thumb{width:14px;height:14px;border-radius:50%;background:var(--card);border:3px solid var(--b2);box-shadow:0 0 0 4px rgba(229,50,45,.14)}
+.lk-range input:focus-visible::-webkit-slider-thumb{box-shadow:0 0 0 8px rgba(255,122,47,.3)}
+.lk-range input:active::-webkit-slider-thumb{box-shadow:0 0 0 10px rgba(160,150,145,.28)}
+.lk-scale{display:grid;grid-template-columns:1fr 1fr 1fr;padding:0 36px;font-size:11px;color:var(--mute)}
+.lk-scale span:nth-child(2){text-align:center}.lk-scale span:last-child{text-align:right}
+.lk-num{display:block;text-align:center;font:400 30px/1.2 Georgia,'Noto Serif',serif;color:var(--b2);font-variant-numeric:lining-nums}
+.lk-cap{text-align:center;font-size:12px;color:var(--mute)}
+.lk-view.lk-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px 8px}
+html[data-theme] main .lk button.lk-f{display:flex;flex-direction:column;align-items:stretch;gap:6px;min-width:0;min-height:0;padding:0;border-radius:10px}
+.lk-f canvas{display:block;width:100%;height:auto;aspect-ratio:4/3;border-radius:10px;border:2px solid transparent;background:#14100f}
+html[data-theme] main .lk button.lk-f span{font-size:11px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--ink)!important}
+html[data-theme] main .lk button.lk-f.on canvas{border-color:var(--b2)}
+html[data-theme] main .lk button.lk-f.on span{color:var(--b2)!important}
