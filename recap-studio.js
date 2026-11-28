@@ -12,7 +12,7 @@
   const STEPS = ['Video Import', 'Transcription', 'Translation', 'Voice Over', 'Render'];
   const ST = { file: null, url: '', dur: 0, w: 0, h: 0, subs: [], mixed: null, cues: [], plan: [], done: {} };
   const S = { ratio: '16:9', size: '720', mx: 0, my: 0, zoom: 100, fill: 'blur', mirror: 'off', grain: 0, hue: 0, look: 'none', sub: '1', subSize: 100, subY: 92, subFont: 'def', subColor: '#ffffff', subStroke: '#000000', subStrokeW: 4,
-              orig: 0, musicVol: 0.15, autoSrt: '1', items: [], sel: -1, color: '#ffffff' };
+              orig: 0, musicVol: 0.15, autoSrt: '1', items: [], sel: -1, color: '#ffffff', txtFont: 'def', imgShape: 'circle' };
   const tiles = (k, vals) => `<div class="rs-tiles" data-k="${k}">${vals.map(([v, t]) => `<div class="rs-tile" data-v="${v}" tabindex="0">${t}</div>`).join('')}</div>`;
   const rng = (k, label, min, max, step, val, u) => `<label>${label} <b data-o="${k}"></b><input type="range" data-k="${k}" data-u="${u || ''}" min="${min}" max="${max}" step="${step}" value="${val}"></label>`;
   const cdots = k => `<div class="rs-cd" data-k="${k}">${['#ffffff', '#ffd34d', '#ff9f1c', '#ff5b5b', '#59d46a', '#22d3ee', '#4da3ff', '#e879f9', '#000000'].map(c => `<span data-c="${c}" style="background:${c}" tabindex="0"></span>`).join('')}<input type="color" aria-label="Custom colour"></div>`;
@@ -41,7 +41,10 @@
         <button id="rsImport" class="rs-btn" disabled>Import JSON</button></div>
       <div id="rsSegs3" class="rs-segs"></div></section>
     <section class="rs-card holo-glass" data-p="4"><div class="rs-grid" id="rsVoSet"></div>
-      ${sel('pause', 'စာကြောင်းကြား နားချိန်', [['0.18', 'ထည့်မည်'], ['0.02', 'မထည့်']])}
+      ${sel('pause', 'စာကြောင်းကြား နားချိန်', [['0.18', 'ပုံမှန် (0.18s)'], ['0.30', 'ရှည် (0.3s)'], ['0.08', 'တို (0.08s)'], ['0.02', 'မထည့်']])}
+      ${sel('natural', 'ဆက်ဖတ်ပေး (စာကြောင်းတိုတွေကို ပေါင်းဖတ် → လူပြောသလို)', [['1', 'On (အကြံပြု)'], ['0', 'Off']])}
+      ${sel('warm', 'အသံ နွေးအောင် (EQ + compressor)', [['1', 'On'], ['0', 'Off']])}
+      ${rng('vpitch', 'Pitch (Thiha / Nilar)', -30, 30, 1, 0, 'Hz')}
       <button id="rsVo" class="rs-btn">အသံထုတ်မည်</button><audio id="rsAudio" controls hidden></audio><div id="rsVoLinks" class="rs-links"></div></section>
     <section class="rs-card holo-glass" data-p="5">
       <div class="rs-prev"><canvas id="rsPrev" width="640" height="360"></canvas>
@@ -55,8 +58,10 @@
         <div class="rs-panel" data-t="mirror" hidden><h4 class="rs-h4">MIRROR</h4>${tiles('mirror', [['off', 'Off'], ['full', 'Full'], ['random', 'Random']])}</div>
         <div class="rs-panel" data-t="look" hidden><h4 class="rs-h4">LOOK</h4>${rng('grain', 'Grain', 0, 100, 1, 0, '')}${rng('hue', 'Hue', 0, 360, 1, 0, '°')}${sel('look', 'Filter', [['none', 'None'], ['warm', 'Warm'], ['cool', 'Cool'], ['bw', 'Black & white'], ['vivid', 'Vivid']])}</div>
         <div class="rs-panel" data-t="overlay" hidden><h4 class="rs-h4">OVERLAY</h4>
+          <label>Text Font<select id="rsTxtFont" class="rs-in"></select></label>
           <div class="rs-row"><input id="rsTxt" class="rs-in" type="text" placeholder="Enter text..."><button id="rsAddTxt" class="rs-btn">+ Text</button></div>
           <div class="rs-dots">${['#ffffff', '#ffd34d', '#ff5b5b', '#59d46a', '#4da3ff', '#000000'].map(c => `<span class="rs-dot" data-c="${c}" style="background:${c}"></span>`).join('')}</div>
+          <label>Photo ပုံစံ<select id="rsShape" class="rs-in">${opt('circle', 'လုံး (Circle)')}${opt('rounded', 'ထောင့်ဝိုင်း (Rounded)')}${opt('rect', 'မူရင်းအတိုင်း')}</select></label>
           <div class="rs-row"><label>Photo<input id="rsImg" class="rs-in" type="file" accept="image/*"></label><button id="rsAddBlur" class="rs-btn">+ Blur box</button></div>
           <div id="rsSelBox" hidden><b id="rsSelName"></b><div class="rs-row"><label>Size <input id="rsItSize" type="range" min="0.2" max="3" step="0.05" value="1"></label><label>Opacity <input id="rsItOp" type="range" min="0.1" max="1" step="0.05" value="1"></label></div><button id="rsItDel" class="rs-btn">Delete</button></div>
           <div class="rs-note">Preview ပေါ်မှာ စာ / ပုံ / Blur box ကို လက်နဲ့ ဆွဲရွှေ့ပါ။ Blur box က မူရင်းစာတန်းကို ဖုံးဖို့ပါ။</div></div>
@@ -420,33 +425,68 @@
     readTtsSettings(); const voice = voiceSelect.value, edge = String(voice).startsWith('edge:');
     if (edge) { if (!/^https?:\/\//.test(safeLsGet(LS_EDGE_URL) || '')) return log('⚠ Edge Worker URL ထည့်ပါ (အပေါ်ကနေရာမှာ)'); } else if (!getKeys().length) return log('⚠ Gemini key မရှိပါ');
     ttsAborted = false; const speed = +speedSlider.value || 1, pause = +$('[data-k="pause"]').value;
-    log('Speed: ' + speed.toFixed(1) + 'x');
-    const clips = new Array(total).fill(null); let next = 0, done = 0;
+    const natural = $('[data-k="natural"]').value === '1', warm = $('[data-k="warm"]').value === '1', pitch = +$('[data-k="vpitch"]').value || 0;
+    // Edge voices: speed + pitch go to Microsoft's own prosody (keeps the voice natural, no chipmunk effect).
+    // Gemini voices have no such setting, so they keep the old playbackRate speed-up.
+    const edgeRate = edge ? clamp(Math.round((speed - 1) * 100), -50, 100) : 0, rate = edge ? 1 : speed;
+    if (typeof setEdgeProsody === 'function') setEdgeProsody(edgeRate, edge ? pitch : 0);
+    log(edge ? `Speed: ${speed.toFixed(1)}x (Edge rate ${edgeRate >= 0 ? '+' : ''}${edgeRate}%) · Pitch ${pitch >= 0 ? '+' : ''}${pitch}Hz` : 'Speed: ' + speed.toFixed(1) + 'x');
+    // Natural mode: neighbouring short cues are read as ONE phrase, so the intonation flows like a person talking
+    // instead of every 1-2 second cue starting and ending flat. Timing is shared back to the cues by length.
+    const items = []; subs.forEach(s => { const t = (s.translatedText || '').trim(); if (t) items.push({ t, tm: srtCueTimes(s), n: Math.max(1, countReadableChars(t)) }); });
+    const groups = [];
+    items.forEach(it => {
+      const g = groups[groups.length - 1];
+      if (natural && g && it.tm && g.last.tm && it.tm.start - g.last.tm.end < 1.2 && g.chars + it.t.length + 1 <= 160 && g.items.length < 6) { g.items.push(it); g.chars += it.t.length + 1; g.last = it; }
+      else groups.push({ items: [it], chars: it.t.length, last: it });
+    });
+    const gText = g => { const t = g.items.map(x => x.t).join(' '); return natural && !/[။၊.!?]$/.test(t) ? t + '။' : t; };
+    // trims the silence Edge adds around each clip and fades the edges, so clips join without clicks
+    const prepClip = (f, sr) => {
+      let a = 0, b = f.length - 1; while (a < b && Math.abs(f[a]) < 0.012) a++; while (b > a && Math.abs(f[b]) < 0.012) b--;
+      a = Math.max(0, a - Math.round(sr * 0.03)); b = Math.min(f.length - 1, b + Math.round(sr * 0.06));
+      const o = f.slice(a, b + 1), fi = Math.round(sr * 0.012), fo = Math.round(sr * 0.04);
+      for (let i = 0; i < fi && i < o.length; i++) o[i] *= i / fi;
+      for (let i = 0; i < fo && i < o.length; i++) o[o.length - 1 - i] *= i / fo;
+      return { f: o, sr };
+    };
+    const clips = new Array(groups.length).fill(null); let next = 0, done = 0;
     async function worker() {
       for (;;) {
-        const i = next++; if (i >= total || ttsAborted) return;
-        const t = (subs[i].translatedText || '').trim();
-        if (t) try {
-          const { pcmBuffer, sampleRate } = await synthesizeChunk(t, voice);
+        const i = next++; if (i >= groups.length || ttsAborted) return;
+        try {
+          const { pcmBuffer, sampleRate } = await synthesizeChunk(gText(groups[i]), voice);
           const i16 = new Int16Array(pcmBuffer, 0, pcmBuffer.byteLength >> 1), f = new Float32Array(i16.length);
-          for (let k = 0; k < i16.length; k++) f[k] = i16[k] / 32768; clips[i] = { f, sr: sampleRate };
-        } catch (e) { log(`#${i + 1} အသံ မထွက်: ${e.message}`); }
-        done++; bar(done / total * 0.8);
+          for (let k = 0; k < i16.length; k++) f[k] = i16[k] / 32768; clips[i] = natural ? prepClip(f, sampleRate) : { f, sr: sampleRate };
+        } catch (e) { log(`အပိုင်း ${i + 1} အသံ မထွက်: ${e.message}`); }
+        done++; bar(done / groups.length * 0.8);
       }
     }
-    log('အသံထုတ်နေသည်... (' + voiceSelect.selectedOptions[0].text + ')');
-    await Promise.all(Array.from({ length: TTS_WORKERS }, worker));
+    log('အသံထုတ်နေသည်... (' + voiceSelect.selectedOptions[0].text + ') · ' + groups.length + ' အပိုင်း' + (natural ? ' (ဆက်ဖတ်)' : ''));
+    await Promise.all(Array.from({ length: Math.min(TTS_WORKERS, groups.length) }, worker));
+    if (typeof setEdgeProsody === 'function') setEdgeProsody(0, 0);
     if (ttsAborted) return log('ရပ်လိုက်သည်');
     let cursor = 0; const place = []; ST.cues = []; ST.plan = [];
-    subs.forEach((sub, k) => {
-      const c = clips[k]; if (!c) return;
-      const t = srtCueTimes(sub), len = c.f.length / c.sr / speed, start = cursor, prev = ST.plan.length ? ST.plan[ST.plan.length - 1].vb : 0;
-      const va = t ? t.start : prev, vb = t ? t.end : va + len;
-      place.push({ c, start }); ST.cues.push({ a: start, b: start + len, text: sub.translatedText.trim() }); ST.plan.push({ o: start, len, va, vb }); cursor = start + len + pause;
+    groups.forEach((g, gi) => {
+      const c = clips[gi]; if (!c) return;
+      const gLen = c.f.length / c.sr / rate, tot = g.items.reduce((n, x) => n + x.n, 0); let off = 0;
+      place.push({ c, start: cursor });
+      g.items.forEach(it => {
+        const len = gLen * it.n / tot, prev = ST.plan.length ? ST.plan[ST.plan.length - 1].vb : 0, va = it.tm ? it.tm.start : prev, vb = it.tm ? it.tm.end : va + len;
+        ST.cues.push({ a: cursor + off, b: cursor + off + len, text: it.t }); ST.plan.push({ o: cursor + off, len, va, vb }); off += len;
+      });
+      cursor += gLen + pause;
     });
     const SR = 24000, secs = cursor + 1; if (secs > 3600) log('⚠ ၁ နာရီထက် ရှည်ရင် ဖုန်း memory မလောက်နိုင်ပါ');
     const oc = new OfflineAudioContext(1, Math.ceil(secs * SR), SR);
-    place.forEach(({ c, start }) => { const b = oc.createBuffer(1, c.f.length, c.sr); b.copyToChannel(c.f, 0); const s = oc.createBufferSource(); s.buffer = b; s.playbackRate.value = speed; s.connect(oc.destination); s.start(start); });
+    let tail = oc.destination; // "warm" = a little low-end body, softer digital sibilance, gentle compression
+    if (warm) {
+      const lo = oc.createBiquadFilter(), hi = oc.createBiquadFilter(), cp = oc.createDynamicsCompressor(), mk = oc.createGain();
+      lo.type = 'lowshelf'; lo.frequency.value = 180; lo.gain.value = 2.5; hi.type = 'highshelf'; hi.frequency.value = 6500; hi.gain.value = -3;
+      cp.threshold.value = -24; cp.ratio.value = 3; cp.attack.value = 0.01; cp.release.value = 0.2; mk.gain.value = 1.25;
+      lo.connect(hi); hi.connect(cp); cp.connect(mk); mk.connect(oc.destination); tail = lo;
+    }
+    place.forEach(({ c, start }) => { const b = oc.createBuffer(1, c.f.length, c.sr); b.copyToChannel(c.f, 0); const s = oc.createBufferSource(); s.buffer = b; s.playbackRate.value = rate; s.connect(tail); s.start(start); });
     ST.mixed = await oc.startRendering(); bar(1);
     const ch = ST.mixed.getChannelData(0), out = new Int16Array(ch.length);
     for (let k = 0; k < ch.length; k++) { const v = clamp(ch[k], -1, 1); out[k] = v < 0 ? v * 32768 : v * 32767; }
@@ -454,7 +494,7 @@
     if (ST.voUrl) URL.revokeObjectURL(ST.voUrl); ST.voUrl = URL.createObjectURL(wav); const au = $('#rsAudio'); au.src = ST.voUrl; au.hidden = false;
     const links = $('#rsVoLinks'); links.innerHTML = '';
     dlBtn(links, 'WAV ဒေါင်းလုဒ်', () => wav, 'voiceover.wav'); dlBtn(links, 'SRT ဒေါင်းလုဒ်', () => srtBlob, 'translated.srt');
-    mark(4); log(`✓ Voice over ပြီး (${place.length}/${total}) · ${Math.round(cursor)}s`);
+    mark(4); log(`✓ Voice over ပြီး (${place.length}/${groups.length} အပိုင်း) · ${Math.round(cursor)}s`);
   });
 
   // ---- 5 Render settings + painter (shared by preview and final render) ----
@@ -487,7 +527,10 @@
     return fontLoads[id];
   }
   // font string for the burned-in subtitles; falls back to the default look until the chosen font has loaded
-  const subFont = fs => { const f = fontOf(S.subFont); return f && (f.url || f.buf) && fontOk[f.id] ? `${f.w || 400} ${fs}px "rsf-${f.id}", ${FONT}` : `700 ${fs}px ${FONT}`; };
+  const fontFor = (id, fs) => { const f = fontOf(id); return f && (f.url || f.buf) && fontOk[f.id] ? `${f.w || 400} ${fs}px "rsf-${f.id}", ${FONT}` : `700 ${fs}px ${FONT}`; };
+  const subFont = fs => fontFor(S.subFont, fs);
+  const itemFont = (it, fs) => fontFor(it.font || 'def', fs);
+  function rrect(g, x, y, w, h, r) { r = Math.min(r, w / 2, h / 2); g.beginPath(); g.moveTo(x + r, y); g.arcTo(x + w, y, x + w, y + h, r); g.arcTo(x + w, y + h, x, y + h, r); g.arcTo(x, y + h, x, y, r); g.arcTo(x, y, x + w, y, r); g.closePath(); }
   function wrap(g, text, maxW) {
     const lines = []; let cur = ''; const mk = /[\u102B-\u103E]/;
     for (const ch of text) { const t = cur + ch;
@@ -496,8 +539,8 @@
   }
   function bounds(it, W, H, g) {
     let w, h;
-    if (it.type === 'text') { const fs = H * 0.045 * it.size; g.font = `700 ${fs}px ${FONT}`; w = g.measureText(it.text).width; h = fs * 1.3; }
-    else if (it.type === 'img') { w = W * 0.25 * it.size; h = w * it.img.naturalHeight / (it.img.naturalWidth || 1); }
+    if (it.type === 'text') { const fs = H * 0.045 * it.size; g.font = itemFont(it, fs); w = g.measureText(it.text).width; h = fs * 1.3; }
+    else if (it.type === 'img') { w = W * 0.25 * it.size; h = it.shape === 'circle' ? w : w * it.img.naturalHeight / (it.img.naturalWidth || 1); }
     else { w = W * 0.6 * it.size; h = H * 0.12 * it.size; }
     return { x0: it.x * W - w / 2, y0: it.y * H - h / 2, x1: it.x * W + w / 2, y1: it.y * H + h / 2, w, h };
   }
@@ -513,8 +556,15 @@
     g.textAlign = 'center'; g.lineJoin = 'round';
     S.items.forEach(it => {
       if (it.type === 'blur') return; g.globalAlpha = it.op; const b = bounds(it, W, H, g);
-      if (it.type === 'img') g.drawImage(it.img, b.x0, b.y0, b.w, b.h);
-      else { const fs = H * 0.045 * it.size; g.font = `700 ${fs}px ${FONT}`; g.lineWidth = fs / 5; g.strokeStyle = it.color === '#000000' ? '#fff' : '#000'; g.fillStyle = it.color; g.strokeText(it.text, it.x * W, b.y1 - fs * 0.3); g.fillText(it.text, it.x * W, b.y1 - fs * 0.3); }
+      if (it.type === 'img') {
+        const iw = it.img.naturalWidth, ih = it.img.naturalHeight;
+        g.save();
+        if (it.shape === 'circle') { g.beginPath(); g.ellipse(b.x0 + b.w / 2, b.y0 + b.h / 2, b.w / 2, b.h / 2, 0, 0, Math.PI * 2); g.clip(); const m = Math.min(iw, ih); g.drawImage(it.img, (iw - m) / 2, (ih - m) / 2, m, m, b.x0, b.y0, b.w, b.h); }
+        else if (it.shape === 'rounded') { rrect(g, b.x0, b.y0, b.w, b.h, Math.min(b.w, b.h) * 0.18); g.clip(); g.drawImage(it.img, b.x0, b.y0, b.w, b.h); }
+        else g.drawImage(it.img, b.x0, b.y0, b.w, b.h);
+        g.restore();
+      }
+      else { const fs = H * 0.045 * it.size; g.font = itemFont(it, fs); g.lineWidth = fs / 5; g.strokeStyle = it.color === '#000000' ? '#fff' : '#000'; g.fillStyle = it.color; g.strokeText(it.text, it.x * W, b.y1 - fs * 0.3); g.fillText(it.text, it.x * W, b.y1 - fs * 0.3); }
       g.globalAlpha = 1;
     });
     if (o.sel && S.sel >= 0 && S.items[S.sel]) { const b = bounds(S.items[S.sel], W, H, g); g.save(); g.setLineDash([8, 6]); g.lineWidth = 2; g.strokeStyle = '#ff7a2f'; g.strokeRect(b.x0, b.y0, b.w, b.h); g.restore(); }
@@ -550,7 +600,7 @@
   $('#rsPP').addEventListener('click', () => { if (!pv.videoWidth) return log('⚠ ဗီဒီယို အရင်ရွေးပါ'); pv.paused ? pv.play() : pv.pause(); });
   $('#rsSeek').addEventListener('input', () => { seeking = true; pv.currentTime = $('#rsSeek').value / 1000 * (pv.duration || 0); });
   $('#rsFS').addEventListener('click', () => { if (pc.requestFullscreen) pc.requestFullscreen(); });
-  const select = i => { S.sel = i; const it = S.items[i]; $('#rsSelBox').hidden = !it; if (it) { $('#rsSelName').textContent = it.type === 'text' ? '“' + it.text + '”' : it.type === 'img' ? 'Photo' : 'Blur box'; $('#rsItSize').value = it.size; $('#rsItOp').value = it.op; $('#rsItOp').disabled = it.type === 'blur'; } drawPrev(); };
+  const select = i => { S.sel = i; const it = S.items[i]; $('#rsSelBox').hidden = !it; if (it) { $('#rsSelName').textContent = it.type === 'text' ? '“' + it.text + '”' : it.type === 'img' ? 'Photo' : 'Blur box'; $('#rsItSize').value = it.size; $('#rsItOp').value = it.op; $('#rsItOp').disabled = it.type === 'blur'; if (it.type === 'text') txtFontSel.value = it.font || 'def'; if (it.type === 'img') $('#rsShape').value = it.shape || 'rect'; } drawPrev(); };
   const pos = e => { const r = pc.getBoundingClientRect(); return [(e.clientX - r.left) / r.width * pc.width, (e.clientY - r.top) / r.height * pc.height]; };
   pc.addEventListener('pointerdown', e => {
     const [px, py] = pos(e);
@@ -575,11 +625,18 @@
   const STYLE_KEY = 'neoyangon_recap_substyle', STYLE_KEYS = ['subFont', 'subColor', 'subStroke', 'subStrokeW', 'subSize', 'subY'];
   let booting = true; // do not overwrite the saved style while it is still being restored
   const saveStyle = () => { if (!booting) safeLsSet(STYLE_KEY, JSON.stringify(Object.fromEntries(STYLE_KEYS.map(k => [k, S[k]])))); };
-  const fontSel = $('#rsFont');
+  const fontSel = $('#rsFont'), txtFontSel = $('#rsTxtFont');
   const buildFontSel = () => {
-    fontSel.innerHTML = ''; FONTS.forEach(f => { const o = document.createElement('option'); o.value = f.id; o.textContent = f.name + (f.user ? ' (ကိုယ်ပိုင်)' : ''); fontSel.appendChild(o); });
+    fontSel.innerHTML = ''; txtFontSel.innerHTML = '';
+    FONTS.forEach(f => { const label = f.name + (f.user ? ' (ကိုယ်ပိုင်)' : ''); [fontSel, txtFontSel].forEach(s => { const o = document.createElement('option'); o.value = f.id; o.textContent = label; s.appendChild(o); }); });
     if (!fontOf(S.subFont)) S.subFont = 'def'; fontSel.value = S.subFont; $('#rsFontDel').hidden = !(fontOf(S.subFont) || {}).user;
+    if (!fontOf(S.txtFont)) S.txtFont = 'def'; const cur = S.items[S.sel]; txtFontSel.value = cur && cur.type === 'text' && fontOf(cur.font) ? cur.font : S.txtFont;
   };
+  txtFontSel.addEventListener('change', async () => {
+    S.txtFont = txtFontSel.value; const it = S.items[S.sel]; if (it && it.type === 'text') it.font = S.txtFont;
+    drawPrev(); await loadFont(S.txtFont); drawPrev();
+  });
+  $('#rsShape').addEventListener('change', e => { S.imgShape = e.target.value; const it = S.items[S.sel]; if (it && it.type === 'img') it.shape = S.imgShape; drawPrev(); });
   const pickFont = async id => { S.subFont = id; buildFontSel(); drawPrev(); await loadFont(id); drawPrev(); saveStyle(); };
   fontSel.addEventListener('change', () => pickFont(fontSel.value));
 
@@ -623,9 +680,9 @@
   buildFontSel();
 
   const add = it => { S.items.push(Object.assign({ x: 0.5, y: 0.5, size: 1, op: 1 }, it)); select(S.items.length - 1); };
-  $('#rsAddTxt').addEventListener('click', () => { const t = $('#rsTxt').value.trim(); if (t) { add({ type: 'text', text: t, color: S.color, y: 0.1 }); $('#rsTxt').value = ''; } });
+  $('#rsAddTxt').addEventListener('click', async () => { const t = $('#rsTxt').value.trim(); if (t) { add({ type: 'text', text: t, color: S.color, y: 0.1, font: S.txtFont }); $('#rsTxt').value = ''; await loadFont(S.txtFont); drawPrev(); } });
   $('#rsAddBlur').addEventListener('click', () => add({ type: 'blur', y: 0.9 }));
-  $('#rsImg').addEventListener('change', e => { const f = e.target.files[0]; if (!f) return; const img = new Image(); img.onload = () => add({ type: 'img', img, size: 0.8 }); img.src = URL.createObjectURL(f); });
+  $('#rsImg').addEventListener('change', e => { const f = e.target.files[0]; if (!f) return; const img = new Image(); img.onload = () => add({ type: 'img', img, size: 0.8, shape: S.imgShape }); img.src = URL.createObjectURL(f); });
   $('#rsItSize').addEventListener('input', e => { if (S.items[S.sel]) { S.items[S.sel].size = +e.target.value; drawPrev(); } });
   $('#rsItOp').addEventListener('input', e => { if (S.items[S.sel]) { S.items[S.sel].op = +e.target.value; drawPrev(); } });
   $('#rsItDel').addEventListener('click', () => { if (S.sel >= 0) { S.items.splice(S.sel, 1); select(-1); } });
@@ -634,7 +691,7 @@
   run('#rsRender', async () => {
     if (!ST.file) return log('⚠ ဗီဒီယို မရှိပါ (Step 1)'); if (!ST.mixed) return log('⚠ Voice Over အရင်လုပ်ပါ (Step 4)');
     if (typeof MediaRecorder === 'undefined') throw new Error('ဒီ browser မှာ MediaRecorder မရှိပါ (Chrome သုံးပါ)');
-    pv.pause(); await loadFont(S.subFont); await document.fonts.ready; const L = { 480: 854, 720: 1280, 1080: 1920 }[S.size], BR = { 480: 2.5e6, 720: 4e6, 1080: 8e6 }[S.size], [W, H] = dims(L);
+    pv.pause(); await loadFont(S.subFont); for (const id of new Set(S.items.filter(x => x.type === 'text').map(x => x.font || 'def'))) await loadFont(id); await document.fonts.ready; const L = { 480: 854, 720: 1280, 1080: 1920 }[S.size], BR = { 480: 2.5e6, 720: 4e6, 1080: 8e6 }[S.size], [W, H] = dims(L);
     const cv = document.createElement('canvas'); cv.width = W; cv.height = H; const g = cv.getContext('2d');
     const v = document.createElement('video'); v.playsInline = true; v.preload = 'auto'; v.src = ST.url;
     await new Promise((ok, no) => { v.onloadeddata = ok; v.onerror = () => no(new Error('ဗီဒီယို ဖွင့်မရပါ')); });

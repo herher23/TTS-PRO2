@@ -707,6 +707,11 @@ function splitTextIntoChunks(text, maxChunkLen = 1200) {
 // ---- Edge TTS (Thiha / Nilar) through your own Cloudflare Worker (edge-tts-worker.js) ----
 const LS_EDGE_URL = 'neoyangon_edge_worker';
 let edgeDecodeCtx = null;
+let EDGE_PROSODY = { rate: '+0%', pitch: '+0Hz' };
+function setEdgeProsody(ratePct, pitchHz) {
+    const f = (n, unit) => (n < 0 ? '-' : '+') + Math.min(Math.abs(Math.round(n)), 200) + unit;
+    EDGE_PROSODY = { rate: f(+ratePct || 0, '%'), pitch: f(+pitchHz || 0, 'Hz') };
+}
 function readTtsSettings() {
     const n = (id, d, min) => Math.max(parseInt((document.getElementById(id) || {}).value, 10) || d, min);
     TTS_CHUNK_CHARS = n('ttsChunkSize', 1200, 200); TTS_WORKERS = n('ttsWorkers', 3, 1);
@@ -721,7 +726,7 @@ async function edgeSynthesize(text, voiceId) {
         const ctl = new AbortController(); activeTtsControllers.push(ctl);
         const timer = setTimeout(() => ctl.abort(), TTS_CHUNK_TIMEOUT_SEC * 1000);
         try {
-            const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text, voice: voiceId }), signal: ctl.signal });
+            const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text, voice: voiceId, rate: EDGE_PROSODY.rate, pitch: EDGE_PROSODY.pitch }), signal: ctl.signal });
             clearTimeout(timer);
             if (!r.ok) throw new Error('Edge HTTP ' + r.status + ' ' + (await r.text()).slice(0, 100));
             edgeDecodeCtx = edgeDecodeCtx || new (window.AudioContext || window.webkitAudioContext)();
