@@ -11,10 +11,11 @@
   const fmtT = t => Math.floor(t / 60) + ':' + String(Math.floor(t % 60)).padStart(2, '0');
   const STEPS = ['Video Import', 'Transcription', 'Translation', 'Voice Over', 'Render'];
   const ST = { file: null, url: '', dur: 0, w: 0, h: 0, subs: [], mixed: null, cues: [], plan: [], done: {} };
-  const S = { ratio: '16:9', size: '720', mx: 0, my: 0, zoom: 100, fill: 'blur', mirror: 'off', grain: 0, hue: 0, look: 'none', sub: '1', subSize: 100, subY: 92,
+  const S = { ratio: '16:9', size: '720', mx: 0, my: 0, zoom: 100, fill: 'blur', mirror: 'off', grain: 0, hue: 0, look: 'none', sub: '1', subSize: 100, subY: 92, subFont: 'def', subColor: '#ffffff', subStroke: '#000000', subStrokeW: 4,
               orig: 0, musicVol: 0.15, autoSrt: '1', items: [], sel: -1, color: '#ffffff' };
   const tiles = (k, vals) => `<div class="rs-tiles" data-k="${k}">${vals.map(([v, t]) => `<div class="rs-tile" data-v="${v}" tabindex="0">${t}</div>`).join('')}</div>`;
   const rng = (k, label, min, max, step, val, u) => `<label>${label} <b data-o="${k}"></b><input type="range" data-k="${k}" data-u="${u || ''}" min="${min}" max="${max}" step="${step}" value="${val}"></label>`;
+  const cdots = k => `<div class="rs-cd" data-k="${k}">${['#ffffff', '#ffd34d', '#ff9f1c', '#ff5b5b', '#59d46a', '#22d3ee', '#4da3ff', '#e879f9', '#000000'].map(c => `<span data-c="${c}" style="background:${c}" tabindex="0"></span>`).join('')}<input type="color" aria-label="Custom colour"></div>`;
   const sel = (k, label, vals) => `<label>${label}<select class="rs-in" data-k="${k}">${vals.map(([v, t]) => opt(v, t)).join('')}</select></label>`;
 
   el.innerHTML = `
@@ -29,7 +30,16 @@
       <label>Cue အရှည်<select id="rsTrLen" class="rs-in">${opt('14', 'တို (14)')}${opt('24', 'အလယ် (24)')}${opt('36', 'ရှည် (36)')}${opt('50', 'အရှည်ဆုံး (50)')}</select></label>
       <button id="rsTr" class="rs-btn">စာထုတ်မည်</button><div id="rsSegs2" class="rs-segs"></div></section>
     <section class="rs-card holo-glass" data-p="3"><div class="rs-grid" id="rsTlSet"></div>
-      <button id="rsTl" class="rs-btn">ဘာသာပြန်မည်</button><div id="rsSegs3" class="rs-segs"></div></section>
+      <div class="rs-mt" id="rsMode"><span role="button" tabindex="0" data-m="auto">Auto</span><span role="button" tabindex="0" data-m="manual">Manual</span></div>
+      <div id="rsTlAuto"><p class="rs-note">Auto — Gemini key နဲ့ ဒီအပ်ဖ်ကပဲ ဘာသာပြန်ပေးပါတယ်။</p><button id="rsTl" class="rs-btn">ဘာသာပြန်မည်</button></div>
+      <div id="rsTlManual" hidden><h4 class="rs-h4">Manual import</h4>
+        <p class="rs-note">Prompt ကို copy → ChatGPT / Gemini / Claude စတာတွေမှာ paste လုပ်ပြီး ဘာသာပြန် → ထွက်လာတဲ့ JSON ကို အောက်မှာ paste လုပ်ပြီး Import နှိပ်ပါ။</p>
+        <label id="rsPartBox" hidden>Part<select id="rsPart" class="rs-in"></select></label>
+        <div class="rs-links"><button id="rsCpTr" class="rs-btn">Translate prompt</button><button id="rsCpRt" class="rs-btn">Retell prompt</button></div>
+        <textarea id="rsPrompt" class="rs-in" rows="5" readonly hidden></textarea>
+        <textarea id="rsPaste" class="rs-in" rows="6" placeholder="Paste JSON here"></textarea>
+        <button id="rsImport" class="rs-btn" disabled>Import JSON</button></div>
+      <div id="rsSegs3" class="rs-segs"></div></section>
     <section class="rs-card holo-glass" data-p="4"><div class="rs-grid" id="rsVoSet"></div>
       ${sel('pause', 'စာကြောင်းကြား နားချိန်', [['0.18', 'ထည့်မည်'], ['0.02', 'မထည့်']])}
       <button id="rsVo" class="rs-btn">အသံထုတ်မည်</button><audio id="rsAudio" controls hidden></audio><div id="rsVoLinks" class="rs-links"></div></section>
@@ -51,9 +61,15 @@
           <div id="rsSelBox" hidden><b id="rsSelName"></b><div class="rs-row"><label>Size <input id="rsItSize" type="range" min="0.2" max="3" step="0.05" value="1"></label><label>Opacity <input id="rsItOp" type="range" min="0.1" max="1" step="0.05" value="1"></label></div><button id="rsItDel" class="rs-btn">Delete</button></div>
           <div class="rs-note">Preview ပေါ်မှာ စာ / ပုံ / Blur box ကို လက်နဲ့ ဆွဲရွှေ့ပါ။ Blur box က မူရင်းစာတန်းကို ဖုံးဖို့ပါ။</div></div>
         <div class="rs-panel" data-t="music" hidden><h4 class="rs-h4">MUSIC</h4><input id="rsMusic" class="rs-in" type="file" accept="audio/*">${rng('musicVol', 'Music volume', 0, 0.6, 0.05, 0.15, 'x')}</div>
-        <div class="rs-panel" data-t="extras" hidden><h4 class="rs-h4">EXTRAS</h4>${sel('sub', 'Subtitles (မီးရှို့)', [['1', 'On'], ['0', 'Off']])}${rng('subSize', 'Subtitle size', 60, 160, 5, 100, '%')}${rng('subY', 'Subtitle position', 60, 96, 1, 92, '%')}${rng('orig', 'မူရင်းအသံ', 0, 1, 0.05, 0, 'x')}${sel('autoSrt', 'Auto-save SRT', [['1', 'On'], ['0', 'Off']])}</div>
+        <div class="rs-panel" data-t="sub" hidden><h4 class="rs-h4">SUBTITLE</h4>${sel('sub', 'Subtitles (မီးရှို့)', [['1', 'On'], ['0', 'Off']])}
+          <label>Font<select id="rsFont" class="rs-in"></select></label>
+          <div class="rs-row"><label>Font ဖိုင်ထည့်ရန် (.ttf / .otf)<input id="rsFontFile" class="rs-in" type="file" accept=".ttf,.otf,.woff,.woff2"></label><button id="rsFontDel" class="rs-btn" hidden>ဒီ Font ဖျက်မည်</button></div>
+          <h4 class="rs-h4">TEXT COLOR</h4>${cdots('subColor')}
+          <h4 class="rs-h4">OUTLINE COLOR</h4>${cdots('subStroke')}
+          ${rng('subStrokeW', 'Outline thickness', 0, 10, 1, 4, '')}${rng('subSize', 'Subtitle size', 60, 160, 5, 100, '%')}${rng('subY', 'Subtitle position', 60, 96, 1, 92, '%')}</div>
+        <div class="rs-panel" data-t="extras" hidden><h4 class="rs-h4">EXTRAS</h4>${rng('orig', 'မူရင်းအသံ', 0, 1, 0.05, 0, 'x')}${sel('autoSrt', 'Auto-save SRT', [['1', 'On'], ['0', 'Off']])}</div>
       </div>
-      <div class="rs-tabs">${[['ratio', 'RATIO'], ['size', 'SIZE'], ['move', 'MOVE'], ['zoom', 'ZOOM'], ['fill', 'FILL'], ['mirror', 'MIRROR'], ['look', 'LOOK'], ['overlay', 'OVERLAY'], ['music', 'MUSIC'], ['extras', 'EXTRAS']].map(([t, n]) => `<div class="rs-tab" data-t="${t}" tabindex="0">${n}</div>`).join('')}</div>
+      <div class="rs-tabs">${[['ratio', 'RATIO'], ['size', 'SIZE'], ['move', 'MOVE'], ['zoom', 'ZOOM'], ['fill', 'FILL'], ['mirror', 'MIRROR'], ['look', 'LOOK'], ['overlay', 'OVERLAY'], ['music', 'MUSIC'], ['sub', 'SUBTITLE'], ['extras', 'EXTRAS']].map(([t, n]) => `<div class="rs-tab" data-t="${t}" tabindex="0">${n}</div>`).join('')}</div>
       <button id="rsRender" class="rs-btn">Start render</button><button id="rsStopR" class="rs-btn" hidden>Stop</button>
       <div class="rs-note">ဗီဒီယိုကို အသံအလိုက် အမြန်/အနှေး ညှိထုတ်မှာမို့ အရှည်က အသံအရှည်အတိုင်း ဖြစ်ပါမယ်။ Render ပြီးတဲ့အထိ ဒီစာမျက်နှာကို ဖွင့်ထားပါ။</div>
       <h4 class="rs-h4">Output</h4><div id="rsOut"><div class="rs-note">Render ပြီးရင် ရလဒ်ဗီဒီယို ဒီမှာ ပေါ်မယ်။</div></div></section>
@@ -68,6 +84,145 @@
     try { await fn(); } catch (err) { log('✗ ' + ((err && err.message) || err)); } finally { b.disabled = false; }
   });
   const click = (node, fn) => { node.addEventListener('click', fn); node.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); fn(e); } }); };
+
+  // <fixMp4>
+  // MediaRecorder writes a *fragmented* MP4 (no duration / sample tables). Browsers scan it fine, but VN / CapCut / most
+  // editors read the header and show a few seconds. This rewrites it as a normal MP4 (full moov up front) without re-encoding.
+  async function fixMp4(blob) {
+    const buf = new Uint8Array(await blob.arrayBuffer()), dv = new DataView(buf.buffer);
+    const u32 = o => dv.getUint32(o), i32 = o => dv.getInt32(o), u64 = o => dv.getUint32(o) * 4294967296 + dv.getUint32(o + 4);
+    const fourcc = o => String.fromCharCode(buf[o], buf[o + 1], buf[o + 2], buf[o + 3]);
+    const kids = (s, e) => {
+      const out = [];
+      while (s + 8 <= e) {
+        let size = u32(s), hdr = 8; const type = fourcc(s + 4);
+        if (size === 1) { size = u64(s + 8); hdr = 16; } else if (size === 0) size = e - s;
+        if (size < hdr || s + size > e) break;
+        out.push({ type, s, e: s + size, b: s + hdr }); s += size;
+      }
+      return out;
+    };
+    const cat = parts => { let n = 0; parts.forEach(p => { n += p.length; }); const o = new Uint8Array(n); let k = 0; parts.forEach(p => { o.set(p, k); k += p.length; }); return o; };
+    const mk = (type, ...parts) => { const body = cat(parts), o = new Uint8Array(8 + body.length); new DataView(o.buffer).setUint32(0, o.length); o.set([...type].map(c => c.charCodeAt(0)), 4); o.set(body, 8); return o; };
+    const be = arr => { const o = new Uint8Array(arr.length * 4), d = new DataView(o.buffer); for (let i = 0; i < arr.length; i++) d.setUint32(i * 4, arr[i] >>> 0); return o; };
+    const runs = vals => { const r = []; vals.forEach(v => { const l = r[r.length - 1]; if (l && l[1] === v) l[0]++; else r.push([1, v]); }); return r; };
+    const patchDur = (box, o0, o1, val) => {
+      const c = buf.slice(box.s, box.e), d = new DataView(c.buffer), v = c[box.b - box.s], o = box.b - box.s + (v ? o1 : o0);
+      if (v) { d.setUint32(o, Math.floor(val / 4294967296)); d.setUint32(o + 4, val >>> 0); } else d.setUint32(o, val >>> 0);
+      return c;
+    };
+
+    const top = kids(0, buf.length), ftyp = top.find(x => x.type === 'ftyp'), moov = top.find(x => x.type === 'moov');
+    if (!moov) throw new Error('moov မတွေ့ပါ');
+    if (!top.some(x => x.type === 'moof')) return blob; // already a normal MP4
+
+    // 1) tracks + defaults from the original moov
+    let mvTs = 1000; const trex = {}, order = [], tracks = {};
+    kids(moov.b, moov.e).forEach(c => {
+      if (c.type === 'mvhd') mvTs = u32(c.b + (buf[c.b] ? 20 : 12));
+      if (c.type === 'mvex') kids(c.b, c.e).forEach(t => { if (t.type === 'trex') trex[u32(t.b + 4)] = { dur: u32(t.b + 12), size: u32(t.b + 16), flags: u32(t.b + 20) }; });
+      if (c.type === 'trak') {
+        const tr = { box: c, samples: [], chunks: [], start: null, sum: 0 };
+        kids(c.b, c.e).forEach(m => {
+          if (m.type === 'tkhd') tr.id = u32(m.b + (buf[m.b] ? 20 : 12));
+          if (m.type === 'mdia') kids(m.b, m.e).forEach(x => {
+            if (x.type === 'mdhd') tr.ts = u32(x.b + (buf[x.b] ? 20 : 12));
+            if (x.type === 'hdlr') tr.hdlr = fourcc(x.b + 8);
+          });
+        });
+        tracks[tr.id] = tr; order.push(tr);
+      }
+    });
+
+    // 2) every sample of every fragment -> per-track tables; sample bytes are re-packed into one mdat
+    const mdat = []; let mdatLen = 0;
+    top.filter(f => f.type === 'moof').forEach(f => {
+      kids(f.b, f.e).filter(x => x.type === 'traf').forEach(traf => {
+        let tf = null, base = f.s, tfdt = null; const truns = [];
+        kids(traf.b, traf.e).forEach(x => {
+          if (x.type === 'tfhd') {
+            const fl = u32(x.b) & 0xffffff; let o = x.b + 4; tf = { id: u32(o) }; o += 4;
+            if (fl & 1) { base = u64(o); o += 8; }
+            if (fl & 2) o += 4;
+            if (fl & 8) { tf.dur = u32(o); o += 4; }
+            if (fl & 0x10) { tf.size = u32(o); o += 4; }
+            if (fl & 0x20) { tf.flags = u32(o); o += 4; }
+          } else if (x.type === 'tfdt') tfdt = buf[x.b] ? u64(x.b + 4) : u32(x.b + 4);
+          else if (x.type === 'trun') truns.push(x);
+        });
+        const tr = tf && tracks[tf.id]; if (!tr) return;
+        const tx = trex[tf.id] || {};
+        if (tr.start === null) tr.start = tfdt || 0;
+        if (tfdt !== null && tr.samples.length) { // close gaps/overlaps so audio and video stay in sync
+          const gap = (tfdt - tr.start) - tr.sum, last = tr.samples[tr.samples.length - 1], old = last.dur;
+          if (gap) { last.dur = Math.max(1, old + gap); tr.sum += last.dur - old; }
+        }
+        let pos = null;
+        truns.forEach(x => {
+          const ver = buf[x.b], fl = u32(x.b) & 0xffffff, n = u32(x.b + 4); let o = x.b + 8, doff = null, ff = null;
+          if (fl & 1) { doff = i32(o); o += 4; }
+          if (fl & 4) { ff = u32(o); o += 4; }
+          let p = doff !== null ? base + doff : (pos !== null ? pos : base); const first = p;
+          for (let i = 0; i < n; i++) {
+            let dur = tf.dur !== undefined ? tf.dur : (tx.dur || 0), size = tf.size !== undefined ? tf.size : (tx.size || 0),
+                flags = tf.flags !== undefined ? tf.flags : (tx.flags || 0), cts = 0;
+            if (fl & 0x100) { dur = u32(o); o += 4; }
+            if (fl & 0x200) { size = u32(o); o += 4; }
+            if (fl & 0x400) { flags = u32(o); o += 4; } else if (i === 0 && ff !== null) flags = ff;
+            if (fl & 0x800) { cts = ver ? i32(o) : u32(o); o += 4; }
+            tr.samples.push({ size, dur, flags, cts }); tr.sum += dur; p += size;
+          }
+          pos = p;
+          if (n > 0 && p > first) { tr.chunks.push({ n, mo: mdatLen }); mdat.push(buf.subarray(first, p)); mdatLen += p - first; }
+        });
+      });
+    });
+    if (!mdatLen) throw new Error('sample မတွေ့ပါ');
+    if (mdatLen > 4e9) throw new Error('ဖိုင်ကြီးလွန်းသည် (4GB+)');
+
+    // 3) durations / edit lists
+    let movieDur = 0;
+    order.forEach(tr => {
+      const off = Math.round((tr.start || 0) / tr.ts * mvTs), media = Math.round(tr.sum / tr.ts * mvTs);
+      tr.tkDur = off + media; movieDur = Math.max(movieDur, tr.tkDur);
+      tr.edts = off > 0 ? mk('edts', mk('elst', be([0, 2, off, 0xffffffff, 0x10000, media, 0, 0x10000]))) : null;
+    });
+
+    // 4) new moov (sample tables filled in, mvex removed)
+    const stblNew = (tr, base) => {
+      const s = tr.samples, parts = [];
+      parts.push(mk('stts', be([0, runs(s.map(x => x.dur)).length, ...runs(s.map(x => x.dur)).flat()])));
+      if (tr.hdlr === 'vide') { const sy = []; s.forEach((x, i) => { if (!(x.flags & 0x10000)) sy.push(i + 1); }); if (sy.length && sy.length < s.length) parts.push(mk('stss', be([0, sy.length]), be(sy))); }
+      if (s.some(x => x.cts)) { const r = runs(s.map(x => x.cts)); parts.push(mk('ctts', be([(s.some(x => x.cts > 0x7fffffff) ? 0 : 1) * 0x1000000 * (s.some(x => x.cts < 0 || x.cts > 0x7fffffff) ? 1 : 0), r.length]), be(r.flat()))); }
+      const sc = []; tr.chunks.forEach((c, i) => { if (!sc.length || sc[sc.length - 1][1] !== c.n) sc.push([i + 1, c.n, 1]); });
+      parts.push(mk('stsc', be([0, sc.length]), be(sc.flat())));
+      parts.push(mk('stsz', be([0, 0, s.length]), be(s.map(x => x.size))));
+      parts.push(mk('stco', be([0, tr.chunks.length]), be(tr.chunks.map(c => base + c.mo))));
+      return parts;
+    };
+    const build = base => mk('moov', ...kids(moov.b, moov.e).filter(c => c.type !== 'mvex').map(c => {
+      if (c.type === 'mvhd') return patchDur(c, 16, 24, movieDur);
+      if (c.type !== 'trak') return buf.subarray(c.s, c.e);
+      const tr = order.find(t => t.box.s === c.s);
+      return mk('trak', ...kids(c.b, c.e).filter(m => m.type !== 'edts').flatMap(m => {
+        if (m.type === 'tkhd') return tr.edts ? [patchDur(m, 20, 28, tr.tkDur), tr.edts] : [patchDur(m, 20, 28, tr.tkDur)];
+        if (m.type !== 'mdia') return [buf.subarray(m.s, m.e)];
+        return [mk('mdia', ...kids(m.b, m.e).map(x => {
+          if (x.type === 'mdhd') return patchDur(x, 16, 24, tr.sum);
+          if (x.type !== 'minf') return buf.subarray(x.s, x.e);
+          return mk('minf', ...kids(x.b, x.e).map(y => {
+            if (y.type !== 'stbl') return buf.subarray(y.s, y.e);
+            const stsd = kids(y.b, y.e).find(z => z.type === 'stsd');
+            return mk('stbl', buf.subarray(stsd.s, stsd.e), ...stblNew(tr, base));
+          }));
+        }))];
+      }));
+    }));
+    const ft = ftyp ? buf.subarray(ftyp.s, ftyp.e) : new Uint8Array(0);
+    let mv = build(0); const base = ft.length + mv.length + 8; mv = build(base);
+    return new Blob([ft, mv, be([mdatLen + 8]), new Uint8Array([0x6d, 0x64, 0x61, 0x74]), ...mdat], { type: 'video/mp4' });
+  }
+  // </fixMp4>
 
   // Download: fresh blob URL on every tap, link kept in the DOM, revoked late (revoking right away breaks
   // downloads on phones). Falls back to opening the file, and shows the real error in the log.
@@ -121,7 +276,7 @@
   const mark = n => { ST.done[n] = true; refreshList(); };
   function go(n) {
     $('#rsList').hidden = true; $('#rsPage').hidden = false; $('#rsPT').textContent = `Step ${n} · ${STEPS[n - 1]}`;
-    $$('#rsPage section').forEach(s => { s.hidden = +s.dataset.p !== n; }); syncAll(); if (n === 5) drawPrev();
+    $$('#rsPage section').forEach(s => { s.hidden = +s.dataset.p !== n; }); syncAll(); if (n === 3 && !$('#rsTlManual').hidden) refreshParts(); if (n === 5) drawPrev();
   }
   $$('.rs-step').forEach(d => click(d, () => go(+d.dataset.s)));
   click($('#rsBack'), () => { pv.pause(); $('#rsPage').hidden = true; $('#rsList').hidden = false; refreshList(); });
@@ -191,6 +346,73 @@
     renderSegs(); mark(3); log('✓ ဘာသာပြန်ပြီး — စာကို ပြင်လို့ရပါတယ်');
   });
 
+  // ---- 3b Manual: copy the prompt, translate anywhere else, paste the JSON back ----
+  const setMode = m => {
+    safeLsSet('neoyangon_recap_tl_mode', m);
+    $$('#rsMode span').forEach(x => x.classList.toggle('on', x.dataset.m === m));
+    $('#rsTlAuto').hidden = m !== 'auto'; $('#rsTlManual').hidden = m !== 'manual';
+    $$('#rsTlSet > *').forEach((n, i) => { n.hidden = m === 'manual' && i > 1; }); // Workers / Timeout / Retries / Proofread are Auto-only
+    if (m === 'manual') refreshParts();
+  };
+  $$('#rsMode span').forEach(x => click(x, () => setMode(x.dataset.m)));
+  const partSize = () => Math.max(parseInt(chunkSizeInput.value, 10) || 30, 1);
+  const partRange = () => { const n = ST.subs.length, sz = partSize(), k = +$('#rsPart').value || 0; return [Math.min(k * sz, n), Math.min((k + 1) * sz, n)]; };
+  function refreshParts() {
+    const n = ST.subs.length, sz = partSize(), parts = Math.max(Math.ceil(n / sz), 1), sel = $('#rsPart'), keep = +sel.value || 0;
+    sel.innerHTML = ''; for (let k = 0; k < parts; k++) { const o = document.createElement('option'); o.value = k; o.textContent = `Part ${k + 1}/${parts} · #${k * sz + 1}–${Math.min((k + 1) * sz, n)}`; sel.appendChild(o); }
+    sel.value = Math.min(keep, parts - 1); $('#rsPartBox').hidden = parts < 2; $('#rsImport').disabled = !n;
+  }
+  chunkSizeInput.addEventListener('input', () => { if (!$('#rsTlManual').hidden) refreshParts(); });
+  $('#rsPaste').addEventListener('input', () => { $('#rsImport').disabled = !ST.subs.length || !$('#rsPaste').value.trim(); });
+
+  const copyText = async text => {
+    try { await navigator.clipboard.writeText(text); return true; } catch (e) { /* fall back below */ }
+    try { const t = document.createElement('textarea'); t.value = text; t.style.cssText = 'position:fixed;top:0;opacity:0'; document.body.appendChild(t); t.focus(); t.select(); const ok = document.execCommand('copy'); t.remove(); return ok; } catch (e) { return false; }
+  };
+  function buildManualPrompt(retell) {
+    if (!ST.subs.length) throw new Error('Transcription အရင်လုပ်ပါ (Step 2)');
+    const [a, b] = partRange(), part = ST.subs.slice(a, b), lang = targetLangSelect.value, lines = part.map(s => (s.textLines || []).join('\n'));
+    const ctx = { before: ST.subs.slice(Math.max(0, a - 3), a).map(s => (s.textLines || []).join('\n')), after: ST.subs.slice(b, b + 3).map(s => (s.textLines || []).join('\n')) };
+    const cps = lang === 'Myanmar (Burmese)' ? getReadingBudgetCps() : 0; if (cps) ctx.budgets = computeReadingBudgets(part, cps);
+    let prompt = buildTranslationPrompt(lines, lang, ctx);
+    if (retell) prompt = `MODE: RETELL — this is a movie-recap narration, not a literal subtitle translation. Retell each numbered line in ${lang} as an engaging third-person recap narrator would say it: say who does what, keep the story flowing naturally from one line to the next, and use storyteller wording instead of word-for-word subtitles. Keep exactly one output string per input line, in the same order and count (never merge, split or skip lines), keep each line about as long to speak as its source line so it fits the timing, and do not invent plot facts. Everything else below (names, JSON-only output, formatting) still applies, and where it says "subtitle style" this retell style takes priority.\n\n` + prompt;
+    return prompt;
+  }
+  [['#rsCpTr', false, 'Translate prompt'], ['#rsCpRt', true, 'Retell prompt']].forEach(([id, retell, label]) => run(id, async () => {
+    const prompt = buildManualPrompt(retell), ok = await copyText(prompt), box = $('#rsPrompt'), btn = $(id);
+    if (ok) { box.hidden = true; btn.textContent = '✓ Copied'; setTimeout(() => { btn.textContent = label; }, 1600); log('✓ Prompt copy လုပ်ပြီး (' + (retell ? 'Retell' : 'Translate') + ', ' + prompt.length + ' စာလုံး) — ChatGPT/Gemini မှာ paste လုပ်ပါ'); }
+    else { box.value = prompt; box.hidden = false; box.focus(); box.select(); log('⚠ Auto copy မရပါ — အောက်က box ထဲက စာကို ရွေးပြီး ကိုယ်တိုင် copy လုပ်ပါ'); }
+  }));
+
+  // Accepts a JSON array of strings (what the prompt asks for), an object holding such an array, an array of
+  // {id,text}-style objects, or a plain numbered list — whatever the other AI happened to return.
+  function parseImported(raw) {
+    let t = String(raw).trim().replace(/^```[a-z]*\s*/i, '').replace(/```\s*$/, '').trim(); t = t.replace(/[\u201c\u201d]/g, '"');
+    let arr = null;
+    try { const j = JSON.parse(t); arr = Array.isArray(j) ? j : Object.values(j).find(Array.isArray) || null; } catch (e) { /* try the next way */ }
+    if (!arr) { try { arr = extractJsonArray(t); } catch (e) { /* try numbered lines */ } }
+    if (!arr) { const nl = t.split(/\r?\n/).map(x => x.match(/^\s*(\d+)\s*[.)\]:-]\s*(.+)$/)).filter(Boolean); if (nl.length) arr = nl.map(m => m[2].trim().replace(/^"|",?$/g, '')); }
+    if (!arr) throw new Error('JSON ဖတ်မရပါ — [ ] ထဲက စာတန်းတွေပါတဲ့ JSON array ကို paste လုပ်ပါ');
+    const pick = x => typeof x === 'string' ? x : x && typeof x === 'object' ? String(x.text ?? x.translation ?? x.translatedText ?? x.t ?? x.output ?? '') : String(x ?? '');
+    if (arr.length && arr.every(x => x && typeof x === 'object')) { // objects carrying their own number -> order by it
+      const idk = ['id', 'n', 'no', 'num', 'index'].find(k => arr.every(x => Number.isFinite(+x[k])));
+      if (idk) arr = arr.slice().sort((x, y) => x[idk] - y[idk]);
+    }
+    return arr.map(pick);
+  }
+  run('#rsImport', async () => {
+    if (!ST.subs.length) throw new Error('Transcription အရင်လုပ်ပါ (Step 2)');
+    const items = parseImported($('#rsPaste').value), [a, b] = partRange(), need = b - a;
+    let from = a, count = need;
+    if (items.length === ST.subs.length && ST.subs.length !== need) { from = 0; count = ST.subs.length; } // whole file pasted while a part is selected
+    else if (items.length !== need) throw new Error(`စာကြောင်းရေ မကိုက်ပါ — ပါလာတာ ${items.length} ကြောင်း၊ လိုတာ ${need} ကြောင်း (Part ရွေးထားတာ မှန်လား စစ်ပါ)`);
+    items.slice(0, count).forEach((t, i) => { ST.subs[from + i].translatedText = applyGlossary(String(t).trim()); });
+    const empty = items.filter(t => !String(t).trim()).length;
+    renderSegs(); mark(3); $('#rsPaste').value = ''; $('#rsImport').disabled = true;
+    log(`✓ Import ပြီး — ${count} ကြောင်း${empty ? ' (ဗလာ ' + empty + ' ကြောင်း ပါတယ်)' : ''}` + (ST.subs.some(x => !(x.translatedText || '').trim()) ? ' · ကျန်တဲ့ Part တွေကိုလည်း ဆက်လုပ်ပါ' : ' · စာကို ပြင်လို့ရပါတယ်'));
+  });
+  setMode(safeLsGet('neoyangon_recap_tl_mode') === 'manual' ? 'manual' : 'auto');
+
   // ---- 4 Voice Over: Text→Speech tab's voice (Edge Thiha/Nilar or Gemini) and settings ----
   run('#rsVo', async () => {
     const subs = ST.subs, total = subs.length;
@@ -241,6 +463,31 @@
   const LOOKS = { none: '', warm: 'sepia(.35) saturate(1.2)', cool: 'hue-rotate(-15deg) saturate(1.1)', bw: 'grayscale(1)', vivid: 'saturate(1.6) contrast(1.1)' };
   const filterStr = () => [S.hue ? `hue-rotate(${S.hue}deg)` : '', LOOKS[S.look]].filter(Boolean).join(' ');
   const FONT = "Padauk,'Myanmar Text',Inter,sans-serif";
+  // Subtitle fonts. Built-in ones are loaded from the fonts/ folder next to index.html, only when picked.
+  // Fonts the user adds from the phone are kept in IndexedDB so they are there next time.
+  const FONTS = [
+    { id: 'def', name: 'Default (Padauk Bold)' },
+    { id: 'padauk', name: 'Padauk', url: 'fonts/padauk.ttf', w: 400 },
+    { id: 'padauk-book', name: 'Padauk Book', url: 'fonts/padauk-book.ttf', w: 400 },
+    { id: 'padauk-book-bold', name: 'Padauk Book Bold', url: 'fonts/padauk-book-bold.ttf', w: 700 },
+    { id: 'noto-ui-bold', name: 'Noto Sans Myanmar UI Bold', url: 'fonts/noto-sans-myanmar-ui-bold.ttf', w: 700 },
+    { id: 'phantee', name: 'Phantee Hand Written', url: 'fonts/phantee-handwritten.ttf', w: 400 },
+    { id: 'z08', name: 'Z08 Strong Medium', url: 'fonts/z08-strong-medium.ttf', w: 400 },
+    { id: 'mymyanmar', name: 'MyMyanmar Universal', url: 'fonts/mymyanmar-universal.ttf', w: 400 },
+    { id: 'akkhayar', name: 'Akkhayar Robo', url: 'fonts/akkhayar-robo.ttf', w: 400 }
+  ];
+  const fontLoads = {}, fontOk = {};
+  const fontOf = id => FONTS.find(f => f.id === id);
+  function loadFont(id) { // resolves true when the font can be drawn on the canvas
+    const f = fontOf(id); if (!f || (!f.url && !f.buf)) return Promise.resolve(true);
+    if (!fontLoads[id]) fontLoads[id] = (async () => {
+      try { const ff = new FontFace('rsf-' + id, f.buf ? f.buf.slice(0) : `url(${f.url})`, { weight: String(f.w || 400) }); await ff.load(); document.fonts.add(ff); fontOk[id] = true; return true; }
+      catch (err) { log('⚠ Font "' + f.name + '" မဖွင့်နိုင်ပါ' + (f.url ? ' — ' + f.url + ' ဖိုင်ကို index.html နားက fonts folder ထဲ တင်ထားပါ' : '')); return false; }
+    })();
+    return fontLoads[id];
+  }
+  // font string for the burned-in subtitles; falls back to the default look until the chosen font has loaded
+  const subFont = fs => { const f = fontOf(S.subFont); return f && (f.url || f.buf) && fontOk[f.id] ? `${f.w || 400} ${fs}px "rsf-${f.id}", ${FONT}` : `700 ${fs}px ${FONT}`; };
   function wrap(g, text, maxW) {
     const lines = []; let cur = ''; const mk = /[\u102B-\u103E]/;
     for (const ch of text) { const t = cur + ch;
@@ -273,9 +520,9 @@
     if (o.sel && S.sel >= 0 && S.items[S.sel]) { const b = bounds(S.items[S.sel], W, H, g); g.save(); g.setLineDash([8, 6]); g.lineWidth = 2; g.strokeStyle = '#ff7a2f'; g.strokeRect(b.x0, b.y0, b.w, b.h); g.restore(); }
     if (o.text) {
       const fs = Math.round(H * (H > W ? 0.03 : 0.042) * S.subSize / 100), lh = fs * 1.35;
-      g.font = `700 ${fs}px ${FONT}`; g.lineWidth = fs / 5; g.strokeStyle = '#000'; g.fillStyle = '#fff';
+      g.font = subFont(fs); g.lineJoin = 'round'; g.lineWidth = fs * S.subStrokeW / 20; g.strokeStyle = S.subStroke; g.fillStyle = S.subColor;
       const lines = wrap(g, o.text, W * 0.9); let y = H * S.subY / 100 - (lines.length - 1) * lh;
-      lines.forEach(l => { g.strokeText(l, W / 2, y); g.fillText(l, W / 2, y); y += lh; });
+      lines.forEach(l => { if (S.subStrokeW > 0) g.strokeText(l, W / 2, y); g.fillText(l, W / 2, y); y += lh; });
     }
   }
   const rnd = k => ((k * 2654435761) >>> 0) % 100 < 45;
@@ -324,6 +571,57 @@
   $$('select[data-k]').forEach(s => s.addEventListener('change', () => { S[s.dataset.k] = s.value; drawPrev(); }));
   $$('[data-reset]').forEach(b => b.addEventListener('click', () => b.dataset.reset.split(',').forEach(k => { const i = $('input[data-k="' + k + '"]'); i.value = k === 'zoom' ? 100 : 0; i.dispatchEvent(new Event('input')); })));
   $$('.rs-dot').forEach(d => d.addEventListener('click', () => { S.color = d.dataset.c; const it = S.items[S.sel]; if (it && it.type === 'text') { it.color = S.color; drawPrev(); } }));
+  // ---- subtitle style: font + colours (saved on this phone) ----
+  const STYLE_KEY = 'neoyangon_recap_substyle', STYLE_KEYS = ['subFont', 'subColor', 'subStroke', 'subStrokeW', 'subSize', 'subY'];
+  let booting = true; // do not overwrite the saved style while it is still being restored
+  const saveStyle = () => { if (!booting) safeLsSet(STYLE_KEY, JSON.stringify(Object.fromEntries(STYLE_KEYS.map(k => [k, S[k]])))); };
+  const fontSel = $('#rsFont');
+  const buildFontSel = () => {
+    fontSel.innerHTML = ''; FONTS.forEach(f => { const o = document.createElement('option'); o.value = f.id; o.textContent = f.name + (f.user ? ' (ကိုယ်ပိုင်)' : ''); fontSel.appendChild(o); });
+    if (!fontOf(S.subFont)) S.subFont = 'def'; fontSel.value = S.subFont; $('#rsFontDel').hidden = !(fontOf(S.subFont) || {}).user;
+  };
+  const pickFont = async id => { S.subFont = id; buildFontSel(); drawPrev(); await loadFont(id); drawPrev(); saveStyle(); };
+  fontSel.addEventListener('change', () => pickFont(fontSel.value));
+
+  const fdb = () => new Promise((res, rej) => { const r = indexedDB.open('neoyangon_recap', 1); r.onupgradeneeded = () => r.result.createObjectStore('fonts', { keyPath: 'id' }); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); });
+  const fdo = async (mode, fn) => { const db = await fdb(); return new Promise((res, rej) => { const tx = db.transaction('fonts', mode), rq = fn(tx.objectStore('fonts')); tx.oncomplete = () => res(rq && rq.result); tx.onerror = () => rej(tx.error); }); };
+  $('#rsFontFile').addEventListener('change', async e => {
+    const file = e.target.files[0]; e.target.value = ''; if (!file) return;
+    try {
+      const buf = await file.arrayBuffer(), id = 'u' + Date.now().toString(36), name = file.name.replace(/\.[^.]+$/, '').slice(0, 40);
+      await new FontFace('rsf-test', buf.slice(0)).load(); // throws when it is not a real font file
+      FONTS.push({ id, name, buf, w: 400, user: true });
+      try { await fdo('readwrite', st => st.put({ id, name, buf })); } catch (err) { log('⚠ Font ကို ဖုန်းထဲ မသိမ်းနိုင်ပါ (ဒီတစ်ခါပဲ သုံးလို့ရမယ်)'); }
+      await pickFont(id); log('✓ Font ထည့်ပြီး: ' + name);
+    } catch (err) { log('✗ Font ဖိုင် မမှန်ပါ — .ttf / .otf / .woff ဖိုင်ကို ရွေးပါ'); }
+  });
+  click($('#rsFontDel'), async () => {
+    const f = fontOf(S.subFont); if (!f || !f.user) return;
+    FONTS.splice(FONTS.indexOf(f), 1); try { await fdo('readwrite', st => st.delete(f.id)); } catch (err) { /* ignore */ }
+    await pickFont('def'); log('Font ဖျက်ပြီး: ' + f.name);
+  });
+
+  $$('.rs-cd').forEach(box => {
+    const k = box.dataset.k, inp = box.querySelector('input'), paint = () => { box.querySelectorAll('span').forEach(x => x.classList.toggle('on', x.dataset.c === S[k])); inp.value = S[k]; };
+    const setC = c => { S[k] = c; paint(); drawPrev(); saveStyle(); };
+    box.querySelectorAll('span').forEach(x => click(x, () => setC(x.dataset.c)));
+    inp.addEventListener('input', () => setC(inp.value)); box._paint = paint; paint();
+  });
+  ['subStrokeW', 'subSize', 'subY'].forEach(k => $('input[data-k="' + k + '"]').addEventListener('input', saveStyle));
+  (() => { // restore the saved style
+    let saved = {}; try { saved = JSON.parse(safeLsGet(STYLE_KEY) || '{}') || {}; } catch (err) { /* ignore */ }
+    ['subColor', 'subStroke'].forEach(k => { if (typeof saved[k] === 'string') S[k] = saved[k]; });
+    const wantFont = typeof saved.subFont === 'string' ? saved.subFont : 'def';
+    ['subStrokeW', 'subSize', 'subY'].forEach(k => { const i = $('input[data-k="' + k + '"]'); if (saved[k] !== undefined && Number.isFinite(+saved[k])) { i.value = saved[k]; i.dispatchEvent(new Event('input')); } });
+    $$('.rs-cd').forEach(b => b._paint());
+    const boot = list => {
+      if (!booting) return; (list || []).forEach(r => { if (!fontOf(r.id)) FONTS.push({ id: r.id, name: r.name, buf: r.buf, w: 400, user: true }); });
+      if (fontOf(wantFont)) S.subFont = wantFont; booting = false; buildFontSel(); if (S.subFont !== 'def') pickFont(S.subFont);
+    };
+    fdo('readonly', st => st.getAll()).then(boot).catch(() => boot([])); setTimeout(() => boot([]), 2500);
+  })();
+  buildFontSel();
+
   const add = it => { S.items.push(Object.assign({ x: 0.5, y: 0.5, size: 1, op: 1 }, it)); select(S.items.length - 1); };
   $('#rsAddTxt').addEventListener('click', () => { const t = $('#rsTxt').value.trim(); if (t) { add({ type: 'text', text: t, color: S.color, y: 0.1 }); $('#rsTxt').value = ''; } });
   $('#rsAddBlur').addEventListener('click', () => add({ type: 'blur', y: 0.9 }));
@@ -336,7 +634,7 @@
   run('#rsRender', async () => {
     if (!ST.file) return log('⚠ ဗီဒီယို မရှိပါ (Step 1)'); if (!ST.mixed) return log('⚠ Voice Over အရင်လုပ်ပါ (Step 4)');
     if (typeof MediaRecorder === 'undefined') throw new Error('ဒီ browser မှာ MediaRecorder မရှိပါ (Chrome သုံးပါ)');
-    pv.pause(); const L = { 480: 854, 720: 1280, 1080: 1920 }[S.size], BR = { 480: 2.5e6, 720: 4e6, 1080: 8e6 }[S.size], [W, H] = dims(L);
+    pv.pause(); await loadFont(S.subFont); await document.fonts.ready; const L = { 480: 854, 720: 1280, 1080: 1920 }[S.size], BR = { 480: 2.5e6, 720: 4e6, 1080: 8e6 }[S.size], [W, H] = dims(L);
     const cv = document.createElement('canvas'); cv.width = W; cv.height = H; const g = cv.getContext('2d');
     const v = document.createElement('video'); v.playsInline = true; v.preload = 'auto'; v.src = ST.url;
     await new Promise((ok, no) => { v.onloadeddata = ok; v.onerror = () => no(new Error('ဗီဒီယို ဖွင့်မရပါ')); });
@@ -364,8 +662,12 @@
     log('Render စတင်ပြီ — စာမျက်နှာကို မပိတ်ပါနဲ့'); rec.start(1000);
     t0 = ac.currentTime + 0.15; vs.start(t0); ms && ms.start(t0); await v.play(); frame();
     await done; if (wake) wake.release(); ac.close(); btn.hidden = true;
-    const type = rec.mimeType || mime || 'video/webm', ext = type.includes('mp4') ? 'mp4' : 'webm', vblob = new Blob(parts, { type: type.split(';')[0] });
+    const type = rec.mimeType || mime || 'video/webm', ext = type.includes('mp4') ? 'mp4' : 'webm'; let vblob = new Blob(parts, { type: type.split(';')[0] });
     if (!vblob.size) throw new Error('Render ထွက်လာတဲ့ဖိုင် ဗလာဖြစ်နေသည် — ပြန်ကြိုးစားပါ');
+    if (ext === 'mp4') { // Chrome's recorder writes a fragmented MP4 -> VN / CapCut read a wrong (very short) duration; rewrite it as a normal MP4
+      try { const fixed = await fixMp4(vblob); if (fixed && fixed.size) { vblob = fixed; log('✓ MP4 ကို VN / CapCut ဖတ်လို့ရအောင် ပြင်ပြီး'); } }
+      catch (err) { log('⚠ MP4 ပြင်မရပါ (' + ((err && err.message) || err) + ') — မူရင်းဖိုင်ကို သုံးမည်'); }
+    } else log('⚠ ဒီ browser က WebM ပဲ ထုတ်ပေးတယ် — VN / CapCut မှာ duration မှားနိုင်ပါတယ် (Chrome ကို update လုပ်ပါ)');
     if (ST.outUrl) URL.revokeObjectURL(ST.outUrl); ST.outUrl = URL.createObjectURL(vblob);
     const out = $('#rsOut'); out.innerHTML = ''; const pvid = document.createElement('video'); pvid.controls = true; pvid.playsInline = true; pvid.src = ST.outUrl; out.appendChild(pvid);
     const lk = document.createElement('div'); lk.className = 'rs-links'; out.appendChild(lk);

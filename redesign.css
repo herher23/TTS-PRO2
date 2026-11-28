@@ -160,3 +160,16 @@ html[data-theme] main button.rs-ic{min-height:38px;width:38px;padding:0;border-r
 /* Recap Studio: live slider number + download buttons */
 .rs .rs-val{color:var(--b1);font-weight:700;margin-left:4px}
 html[data-theme] main button.rs-dl{min-height:42px;padding:10px 16px;margin-top:8px;display:inline-flex;align-items:center;justify-content:center}
+
+/* Recap Studio step 3: Auto / Manual switch */
+.rs-mt{display:flex;gap:4px;padding:4px;border-radius:16px;background:var(--tint);border:1px solid var(--line)}
+.rs-mt span{flex:1;text-align:center;padding:10px 0;border-radius:12px;font-weight:700;font-size:14px;color:var(--mute);cursor:pointer}
+.rs-mt span.on{background:var(--grad);color:#fff;box-shadow:0 6px 16px rgba(229,50,45,.25)}
+#rsTlManual{display:flex;flex-direction:column;gap:10px}
+#rsTlManual .rs-links>button{flex:1 1 140px}
+
+/* Recap Studio: subtitle colour pickers */
+.rs-cd{display:flex;flex-wrap:wrap;align-items:center;gap:10px}
+.rs-cd span{width:30px;height:30px;border-radius:50%;border:2px solid var(--line);cursor:pointer}
+.rs-cd span.on{outline:3px solid var(--b2);outline-offset:2px}
+.rs-cd input[type=color]{width:38px;height:34px;padding:0;border:1px solid var(--line);border-radius:10px;background:none;cursor:pointer}
