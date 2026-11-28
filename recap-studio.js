@@ -52,15 +52,19 @@
         <button id="rsImport" class="rs-btn" disabled>Import JSON</button></div>
       <div id="rsSegs3" class="rs-segs"></div></section>
     <section class="rs-card holo-glass" data-p="4"><div class="rs-grid" id="rsVoSet"></div>
-      <div class="rs-nara"><label>Nara voice — အခမဲ့ (ဖုန်းထဲမှာပဲ အသံထုတ်၊ server မလို)<select id="rsNara" class="rs-in">${opt('', 'မသုံးဘူး (အပေါ်က voice ကို သုံးမယ်)')}${opt('shoon', 'Shoon')}${opt('thazin', 'Thazin')}${opt('ko-banyar', 'Ko Banyar')}${opt('htet-myat', 'Htet Myat')}</select></label>
-        <p class="rs-note" id="rsNaraSt"></p>
-        <div class="rs-links"><button id="rsNaraDl" class="rs-btn" type="button">Voice ဒေါင်းလုဒ်</button><button id="rsNaraDel" class="rs-btn" type="button">ဖုန်းထဲက ဖျက်မည်</button></div>
-        <p class="rs-note">Voice တစ်ခုကို ~181 MB တစ်ခါပဲ ဒေါင်းရပြီး ဖုန်းထဲ သိမ်းထားမယ်။ ဖုန်းအလိုက် အသံထုတ်ရတာ နှေးနိုင်တယ် (အရှည်ထက် ၂ ဆလောက်)။ အင်္ဂလိပ်စာလုံးတွေ အသံမထွက်ပါ။ Nara Mini v1 © Nara Audio (Apache-2.0) · browser port: SagaPyaw</p></div>
+      <div class="rs-nara"><select id="rsNara" hidden>${opt('', '')}${opt('shoon', 'Shoon')}${opt('thazin', 'Thazin')}${opt('ko-banyar', 'Ko Banyar')}${opt('htet-myat', 'Htet Myat')}</select>
+        <div class="nv-seg" id="nvSeg"><span data-m="off" role="button" tabindex="0">Voice Over</span><span data-m="nara" role="button" tabindex="0">Nara <small>အခမဲ့</small></span></div>
+        <div id="nvBox" hidden>
+          <button id="nvCard" class="nv-card" type="button"><span class="nv-ic"><i class="fa-solid fa-microphone"></i></span><span class="nv-tx"><b id="nvName">Nara voice ရွေးပါ</b><small id="nvSub"></small></span><i class="fa-solid fa-chevron-down"></i></button>
+          <p class="nv-warn"><i class="fa-solid fa-triangle-exclamation"></i> Nara က ဖုန်းထဲမှာ run တာမို့ ဖုန်း နွေးလာနိုင်ပါတယ်</p>
+          <p class="rs-note" id="rsNaraSt"></p>
+          <div class="rs-links"><button id="rsNaraEng" class="rs-btn" type="button">Engine စစ်မည်</button></div>
+          <p class="rs-note">Voice တစ်ခုကို ~181 MB တစ်ခါပဲ ဒေါင်းရပြီး ဖုန်းထဲ သိမ်းထားမယ်။ အင်္ဂလိပ်စာလုံးတွေ အသံမထွက်ပါ။ ဖုန်းအလိုက် အသံထုတ်ရတာ နှေးနိုင်တယ်။ Voice by Nara Mini v1 © Nara Audio (Apache-2.0) · browser port: SagaPyaw</p></div></div>
       ${sel('pause', 'စာကြောင်းကြား နားချိန်', [['0.18', 'ပုံမှန် (0.18s)'], ['0.30', 'ရှည် (0.3s)'], ['0.08', 'တို (0.08s)'], ['0.02', 'မထည့်']])}
       ${sel('natural', 'ဆက်ဖတ်ပေး (စာကြောင်းတိုတွေကို ပေါင်းဖတ် → လူပြောသလို)', [['1', 'On (အကြံပြု)'], ['0', 'Off']])}
       ${sel('warm', 'အသံ နွေးအောင် (EQ + compressor)', [['1', 'On'], ['0', 'Off']])}
       ${rng('vpitch', 'Pitch (Thiha / Nilar)', -30, 30, 1, 0, 'Hz')}
-      <button id="rsVo" class="rs-btn">အသံထုတ်မည်</button><audio id="rsAudio" controls hidden></audio><div id="rsVoLinks" class="rs-links"></div></section>
+      <button id="rsVo" class="rs-btn">အသံထုတ်မည်</button><button id="rsStop" class="rs-btn rs-stop" type="button" hidden>■ Stop</button><audio id="rsAudio" controls hidden></audio><div id="rsVoLinks" class="rs-links"></div></section>
     <section class="rs-card holo-glass" data-p="5">
       <div class="rs-prev"><canvas id="rsPrev" width="640" height="360"></canvas>
         <div class="rs-pc"><button id="rsPP" class="rs-ic" aria-label="Play"><i class="fa-solid fa-play"></i></button><input id="rsSeek" type="range" min="0" max="1000" value="0"><span id="rsT">0:00</span><button id="rsFS" class="rs-ic" aria-label="Fullscreen"><i class="fa-solid fa-expand"></i></button></div></div>
@@ -442,18 +446,98 @@
   });
   setMode(safeLsGet('neoyangon_recap_tl_mode') === 'manual' ? 'manual' : 'auto');
 
-  // ---- Nara (free, runs in the phone's browser): choose / download / delete ----
-  const naraSel = $('#rsNara'), setNaraSt = m => { $('#rsNaraSt').textContent = m || ''; };
+  // ---- Nara (free, runs in the phone's browser): voice picker sheet like the reference app ----
+  // Tabs  [Voice Over | Nara]  ->  card "Thazin · Speed 1.2x · Offline"  ->  bottom sheet "Select Nara voice":
+  // each voice has Download / (Play sample + Delete once downloaded), a Speed slider, Close / Select.
+  const spEl = document.getElementById('speedSlider');
+  const NARA_IDS = ['shoon', 'thazin', 'ko-banyar', 'htet-myat'], NT = () => window.NaraTTS;
+  const naraSel = $('#rsNara'), setNaraSt = (m, p) => { $('#rsNaraSt').textContent = m || ''; if (typeof p === 'number') bar(p / 100); };
+  const spTxt = () => (+spEl.value || 1).toFixed(1) + 'x';
+  let naraOn = NARA_IDS.includes(safeLsGet('neoyangon_recap_nara'));
+  let naraPick = NARA_IDS.includes(safeLsGet('neoyangon_recap_nara_pick')) ? safeLsGet('neoyangon_recap_nara_pick') : (naraOn ? safeLsGet('neoyangon_recap_nara') : '');
   async function naraStatus() {
     const v = naraSel.value; if (!v) return '';
-    if (!window.NaraTTS) return '⚠ nara.js မတွေ့ပါ';
-    return (await NaraTTS.isCached(v)) ? '✓ ' + NaraTTS.nameOf(v) + ' ဖုန်းထဲမှာ ရှိပြီး (ပြန်မဒေါင်းရ)' : NaraTTS.nameOf(v) + ' — မဒေါင်းရသေးပါ (~181 MB၊ တစ်ခါပဲ)';
+    if (!NT()) return '⚠ nara.js မတွေ့ပါ';
+    return (await NT().isCached(v)) ? '✓ ' + NT().nameOf(v) + ' ဖုန်းထဲမှာ ရှိပြီး (ပြန်မဒေါင်းရ)' : NT().nameOf(v) + ' — မဒေါင်းရသေးပါ (~' + NT().sizeMB + ' MB၊ တစ်ခါပဲ)';
   }
-  naraSel.value = ['shoon', 'thazin', 'ko-banyar', 'htet-myat'].includes(safeLsGet('neoyangon_recap_nara')) ? safeLsGet('neoyangon_recap_nara') : '';
-  naraSel.addEventListener('change', async () => { safeLsSet('neoyangon_recap_nara', naraSel.value); setNaraSt(await naraStatus()); });
-  naraStatus().then(setNaraSt);
-  run('#rsNaraDl', async () => { const v = naraSel.value; if (!v) return log('⚠ Nara voice အရင်ရွေးပါ'); await NaraTTS.prepare(v, setNaraSt); setNaraSt(await naraStatus()); log('✓ Nara ' + NaraTTS.nameOf(v) + ' အသင့်ဖြစ်ပြီ'); });
-  run('#rsNaraDel', async () => { const v = naraSel.value; if (!v) return; await NaraTTS.remove(v); setNaraSt(await naraStatus()); log('Nara ' + NaraTTS.nameOf(v) + ' ကို ဖုန်းထဲက ဖျက်ပြီး'); });
+  async function paintNara() {
+    $$('#nvSeg span').forEach(x => x.classList.toggle('on', (x.dataset.m === 'nara') === naraOn));
+    $('#nvBox').hidden = !naraOn;
+    $('#nvName').textContent = naraPick && NT() ? NT().nameOf(naraPick) : 'Nara voice ရွေးပါ';
+    let sub = 'နှိပ်ပြီး ရွေးပါ';
+    if (!NT()) sub = '⚠ nara.js မတွေ့ပါ';
+    else if (naraPick) sub = 'Speed ' + spTxt() + ' · ' + ((await NT().isCached(naraPick)) ? 'Offline' : 'မဒေါင်းရသေးပါ');
+    $('#nvSub').textContent = sub; setNaraSt(await naraStatus());
+  }
+  function applyNara() {
+    naraSel.value = naraOn && naraPick ? naraPick : '';
+    safeLsSet('neoyangon_recap_nara', naraSel.value); safeLsSet('neoyangon_recap_nara_pick', naraPick); paintNara();
+  }
+  const sheet = document.createElement('div'); sheet.id = 'nvSheet'; sheet.hidden = true;
+  sheet.innerHTML = `<div class="nv-box"><h3>Select Nara voice</h3><div id="nvList" class="nv-list"></div>
+    <label class="nv-speed"><span>Speed</span><b id="nvSpV"></b><input id="nvSp" type="range" min="0.5" max="2" step="0.1"></label>
+    <p class="nv-msg" id="nvMsg"></p>
+    <div class="nv-btns"><button type="button" id="nvClose">Close</button><button type="button" id="nvSelect" class="pri">Select</button></div></div>`;
+  document.body.appendChild(sheet);
+  const sq = s => sheet.querySelector(s), nvMsg = m => { sq('#nvMsg').textContent = m || ''; };
+  let nvSel = naraPick || 'shoon', nvBusy = false, nvPlay = null; const dlState = {};
+  async function nvRender() {
+    if (!NT()) { sq('#nvList').innerHTML = '<p class="nv-msg">⚠ nara.js မတွေ့ပါ</p>'; return; }
+    const rows = [];
+    for (const id of NARA_IDS) {
+      const ok = await NT().isCached(id), p = dlState[id], dl = p !== undefined;
+      const act = dl ? `<span class="nv-pct">${p}%</span>`
+        : ok ? '<button type="button" class="nv-b" data-a="pv" aria-label="Play sample"><i class="fa-solid fa-play"></i></button><button type="button" class="nv-b dng" data-a="rm" aria-label="Delete"><i class="fa-solid fa-trash"></i></button>'
+          : '<button type="button" class="nv-b" data-a="dl" aria-label="Download"><i class="fa-solid fa-download"></i></button>';
+      rows.push(`<div class="nv-row${id === nvSel ? ' on' : ''}${ok ? ' ok' : ''}" data-v="${id}" tabindex="0"><span class="nv-chk">${ok ? '<i class="fa-solid fa-check"></i>' : ''}</span>
+        <div class="nv-in"><b>${NT().nameOf(id)}</b><small>${dl ? 'ဒေါင်းနေသည်...' : ok ? 'Downloaded · ' + NT().sizeMB + ' MB' : NT().sizeMB + ' MB'}</small>${dl ? `<span class="nv-pb"><span style="width:${p}%"></span></span>` : ''}</div><span class="nv-act">${act}</span></div>`);
+    }
+    sq('#nvList').innerHTML = rows.join('');
+  }
+  function nvProgress(id, m, p) {
+    dlState[id] = p; nvMsg(m); const row = sq('.nv-row[data-v="' + id + '"]'); if (!row) return;
+    const a = row.querySelector('.nv-pct'), b = row.querySelector('.nv-pb span'); if (a) a.textContent = p + '%'; if (b) b.style.width = p + '%';
+    bar(p / 100);
+  }
+  async function nvDownload(id) {
+    if (nvBusy || dlState[id] !== undefined) return; dlState[id] = 0; nvRender();
+    try { await NT().download(id, (m, p) => nvProgress(id, m, p)); nvMsg('✓ ' + NT().nameOf(id) + ' ဒေါင်းပြီး — Play နဲ့ နမူနာ နားထောင်နိုင်ပါပြီ'); log('✓ Nara ' + NT().nameOf(id) + ' ဒေါင်းပြီး'); }
+    catch (e) { nvMsg('✗ ' + e.message); log('✗ ' + e.message); }
+    finally { delete dlState[id]; bar(0); nvRender(); paintNara(); }
+  }
+  function nvStop() { if (nvPlay) { try { nvPlay.src.stop(); } catch (e) { /* already stopped */ } try { nvPlay.ctx.close(); } catch (e) { /* closed */ } nvPlay = null; } }
+  async function nvPreview(id) {
+    if (nvBusy) return; nvBusy = true; nvStop();
+    try {
+      const { pcmBuffer, sampleRate } = await NT().preview(id, m => nvMsg(m)), i16 = new Int16Array(pcmBuffer), f = new Float32Array(i16.length);
+      for (let k = 0; k < i16.length; k++) f[k] = i16[k] / 32768;
+      const ctx = new (window.AudioContext || window.webkitAudioContext)(), buf = ctx.createBuffer(1, f.length, sampleRate); buf.copyToChannel(f, 0);
+      const src = ctx.createBufferSource(); src.buffer = buf; src.playbackRate.value = +spEl.value || 1; src.connect(ctx.destination); src.onended = () => { nvMsg(''); }; src.start(); nvPlay = { src, ctx }; nvMsg('▶ ' + NT().nameOf(id) + ' နမူနာ');
+    } catch (e) { nvMsg('✗ ' + e.message); log('✗ ' + e.message); } finally { nvBusy = false; }
+  }
+  function openSheet() { nvSel = naraPick || nvSel || 'shoon'; sq('#nvSp').value = spEl.value; sq('#nvSpV').textContent = spTxt(); nvMsg(''); sheet.hidden = false; nvRender(); }
+  function closeSheet() { sheet.hidden = true; nvStop(); }
+  sheet.addEventListener('click', async e => {
+    if (e.target === sheet) return closeSheet();
+    const row = e.target.closest('.nv-row'); if (!row) return; const id = row.dataset.v, b = e.target.closest('[data-a]');
+    if (b) {
+      if (b.dataset.a === 'dl') return nvDownload(id);
+      if (b.dataset.a === 'pv') return nvPreview(id);
+      if (b.dataset.a === 'rm') { if (!confirm(NT().nameOf(id) + ' ကို ဖုန်းထဲက ဖျက်မလား?')) return; nvStop(); await NT().remove(id); log('Nara ' + NT().nameOf(id) + ' ကို ဖုန်းထဲက ဖျက်ပြီး'); nvMsg(''); await nvRender(); return paintNara(); }
+    }
+    nvSel = id; nvRender();
+  });
+  sq('#nvSp').addEventListener('input', () => { spEl.value = sq('#nvSp').value; spEl.dispatchEvent(new Event('input', { bubbles: true })); spEl.dispatchEvent(new Event('change', { bubbles: true })); sq('#nvSpV').textContent = spTxt(); paintNara(); });
+  sq('#nvClose').addEventListener('click', closeSheet);
+  sq('#nvSelect').addEventListener('click', () => { naraPick = nvSel; naraOn = true; applyNara(); closeSheet(); });
+  document.addEventListener('keydown', e => { if (e.key === 'Escape' && !sheet.hidden) closeSheet(); });
+  $$('#nvSeg span').forEach(x => click(x, () => { naraOn = x.dataset.m === 'nara'; applyNara(); if (naraOn && !naraPick) openSheet(); }));
+  $('#nvCard').addEventListener('click', openSheet);
+  spEl.addEventListener('input', () => { if (!sheet.hidden) { sq('#nvSp').value = spEl.value; sq('#nvSpV').textContent = spTxt(); } paintNara(); });
+  run('#rsNaraEng', async () => { setNaraSt('Engine စစ်နေသည်...'); const s = await NT().checkEngine(setNaraSt); setNaraSt('✓ Engine အဆင်ပြေ (' + s + ')'); log('✓ Nara engine OK · ' + s); });
+  $('#rsStop').addEventListener('click', () => { ttsAborted = true; log('ရပ်နေသည်...'); });
+  new MutationObserver(() => { $('#rsStop').hidden = !$('#rsVo').disabled; }).observe($('#rsVo'), { attributes: true, attributeFilter: ['disabled'] });
+  applyNara();
 
   // ---- 4 Voice Over: Text→Speech tab's voice (Edge Thiha/Nilar or Gemini) and settings ----
   run('#rsVo', async () => {
