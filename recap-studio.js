@@ -273,7 +273,7 @@
     const info = Object.assign({ 1: ST.file ? `${fmtT(ST.dur)} · ${ST.w}×${ST.h}` : 'ဗီဒီယို မရွေးရသေးပါ', 2: ST.subs.length ? ST.subs.length + ' segments' : '', 3: ST.subs.some(s => s.translatedText) ? targetLangSelect.value : '', 4: ST.mixed ? fmtT(ST.mixed.duration) : '', 5: '' }, extra);
     $$('.rs-step').forEach((d, i) => { const n = i + 1, ok = ST.done[n]; d.classList.toggle('ok', !!ok); d.querySelector('small').textContent = info[n] || ''; d.querySelector('.rs-badge').textContent = ok ? 'Completed' : 'Pending'; d.querySelector('.rs-ck').innerHTML = ok ? '<i class="fa-solid fa-check"></i>' : n; });
   }
-  const mark = n => { ST.done[n] = true; refreshList(); };
+  const mark = n => { ST.done[n] = true; refreshList(); if (window.History2) History2.recapDirty(); };
   function go(n) {
     $('#rsList').hidden = true; $('#rsPage').hidden = false; $('#rsPT').textContent = `Step ${n} · ${STEPS[n - 1]}`;
     $$('#rsPage section').forEach(s => { s.hidden = +s.dataset.p !== n; }); syncAll(); if (n === 3 && !$('#rsTlManual').hidden) refreshParts(); if (n === 5) drawPrev();
@@ -299,7 +299,7 @@
   // ---- 1 Import ----
   $('#rsFile').addEventListener('change', e => {
     const f = e.target.files[0]; if (!f) return;
-    Object.assign(ST, { file: f, subs: [], mixed: null, plan: [], cues: [], done: {} }); renderSegs();
+    Object.assign(ST, { file: f, subs: [], mixed: null, plan: [], cues: [], done: {}, hid: null }); renderSegs();
     if (ST.url) URL.revokeObjectURL(ST.url); ST.url = URL.createObjectURL(f);
     const iv = $('#rsInV'); iv.src = ST.url; iv.hidden = false; pv.src = ST.url; pv.load();
     const v = document.createElement('video'); v.preload = 'metadata'; v.src = ST.url;
@@ -675,4 +675,33 @@
     dlBtn(lk, 'SRT ဒေါင်းလုဒ်', () => new Blob([rebuildSrt(ST.subs, { preserveIndex: true })], { type: 'text/plain;charset=utf-8' }), 'translated.srt');
     mark(5); log('✓ Render ပြီး');
   });
+
+  // ---- History hooks: save / reopen a project (used by history.js) ----
+  window.RecapStudio = {
+    async snapshot() {
+      if (!ST.file && !ST.subs.length) return null;
+      if (!ST.hid) ST.hid = 'recap-' + Date.now();
+      try { if (pv.videoWidth) { const c = document.createElement('canvas'); c.width = 320; c.height = Math.round(320 * pv.videoHeight / pv.videoWidth); c.getContext('2d').drawImage(pv, 0, 0, c.width, c.height); ST.thumb = c.toDataURL('image/jpeg', 0.7); } } catch (e) { /* no frame yet */ }
+      const blobOf = async u => { try { return u ? await (await fetch(u)).blob() : null; } catch (e) { return null; } };
+      const n = Object.keys(ST.done).length;
+      return { id: ST.hid, tool: 'recap', title: ST.file ? ST.file.name.replace(/\.[^.]+$/, '') : 'Untitled Project', meta: n + '/5 steps', dur: ST.dur, w: ST.w, h: ST.h, done: { ...ST.done }, thumb: ST.thumb || '',
+        subs: JSON.parse(JSON.stringify(ST.subs)), plan: ST.plan, cues: ST.cues, vo: await blobOf(ST.voUrl), out: await blobOf(ST.outUrl),
+        src: ST.file && ST.file.size <= 120 * 1048576 ? ST.file : null, srcName: ST.file ? ST.file.name : '' };
+    },
+    async restore(rec) {
+      Object.assign(ST, { subs: rec.subs || [], plan: rec.plan || [], cues: rec.cues || [], done: rec.done || {}, dur: rec.dur || 0, w: rec.w || 0, h: rec.h || 0, hid: rec.id, thumb: rec.thumb, mixed: null });
+      if (rec.src) {
+        ST.file = new File([rec.src], rec.srcName || 'video.mp4', { type: rec.src.type });
+        if (ST.url) URL.revokeObjectURL(ST.url); ST.url = URL.createObjectURL(ST.file);
+        const iv = $('#rsInV'); iv.src = ST.url; iv.hidden = false; pv.src = ST.url; pv.load();
+        $('#rsChips').innerHTML = [fmtT(ST.dur), `${ST.w}×${ST.h}`, (ST.file.size / 1048576).toFixed(1) + ' MB', 'Audio'].map(x => `<span>${x}</span>`).join('');
+      } else { ST.file = null; $('#rsChips').innerHTML = '<span>ဗီဒီယိုဖိုင်ကို မသိမ်းထားပါ — Step 1 မှာ ပြန်ရွေးပါ</span>'; }
+      if (rec.vo) {
+        if (ST.voUrl) URL.revokeObjectURL(ST.voUrl); ST.voUrl = URL.createObjectURL(rec.vo); const au = $('#rsAudio'); au.src = ST.voUrl; au.hidden = false;
+        try { const ac = new (window.AudioContext || window.webkitAudioContext)(); ST.mixed = await ac.decodeAudioData(await rec.vo.arrayBuffer()); ac.close(); } catch (e) { log('⚠ အသံ ပြန်ဖွင့်မရပါ: ' + e.message); }
+      }
+      if (rec.out) { if (ST.outUrl) URL.revokeObjectURL(ST.outUrl); ST.outUrl = URL.createObjectURL(rec.out); const out = $('#rsOut'); out.innerHTML = ''; const v = document.createElement('video'); v.controls = true; v.playsInline = true; v.src = ST.outUrl; out.appendChild(v); }
+      renderSegs(); refreshList(); log('✓ History ကနေ project ပြန်ဖွင့်ပြီး');
+    }
+  };
 })();

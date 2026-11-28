@@ -912,6 +912,7 @@ async function handleSynthesizeAudio() {
         progressBar.style.width = '0%';
 
         initWebAudioGraph();
+        if (window.History2) History2.fromTts(currentAudioBlob, text, voice);
 
         setStatus("SYNTHESIS COMPLETE // READY TO PLAY", "text-emerald-400");
 
@@ -2400,6 +2401,7 @@ async function handleTranslateSrt() {
         } else {
             outputDoneBadge.classList.remove('hidden');
             logTrans('ဘာသာပြန်ခြင်း အားလုံးပြီးဆုံးပါပြီ ✓', 'ok');
+            if (window.History2) History2.fromTranslate();
         }
 
     } catch (err) {
@@ -3807,6 +3809,7 @@ async function handleTranscribeMedia() {
             provider: providerSummary,
             sourceFileName: selectedMediaFile.name
         };
+        if (window.History2) History2.fromTranscribe(currentTranscribeResult);
 
         renderTranscribeOutput();
         transcribeOutputMeta.textContent = `Provider: ${providerSummary} (chunked) | Segments: ${subsForText.length} | Characters: ${currentTranscribeResult.fullText.length}`;
@@ -5502,6 +5505,7 @@ async function handleGeminiTranscribe() {
             provider: 'gemini',
             sourceFileName: selectedMediaFile.name
         };
+        if (window.History2) History2.fromTranscribe(currentTranscribeResult);
 
         renderTranscribeOutput();
         if (lastTranscribeCtx) { lastTranscribeCtx.retriedEmpty = []; lastTranscribeCtx.failedChunks = []; }
