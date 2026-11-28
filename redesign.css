@@ -285,3 +285,14 @@ html[data-theme] main button.vo-fs{flex:none;min-height:38px;padding:0 12px;back
 .rs-ibar .rs-tab i{width:44px;height:44px;border-radius:50%;display:grid;place-items:center;font-size:17px}
 .rs-ibar .rs-tab.on{background:transparent;color:var(--b1)}
 .rs-ibar .rs-tab.on i{background:var(--grad);color:#fff;box-shadow:0 6px 16px rgba(229,50,45,.3)}
+
+/* Recap Studio: progress card (label + bar + number), sticks above the bottom bar while a job runs */
+.rs-pg{position:sticky;bottom:calc(92px + env(safe-area-inset-bottom));z-index:6;background:var(--card);border:1px solid var(--line);border-radius:16px;padding:10px 12px;box-shadow:var(--shadow);display:flex;flex-direction:column;gap:6px}
+.rs-pgh{display:flex;align-items:baseline;justify-content:space-between;gap:10px}
+.rs-pgh b{font-size:13.5px;min-width:0}
+#rsPgN{font-size:18px;font-weight:800;color:var(--b1);font-variant-numeric:tabular-nums;flex:none}
+.rs-pg small{font-size:12px;color:var(--mute);min-height:1.2em}
+.rs-pg.busy .rs-bar i{width:38%!important;animation:rsInd 1.3s ease-in-out infinite}
+.rs-pg.err .rs-bar i{background:#d64545}.rs-pg.err #rsPgN{color:#d64545}
+@keyframes rsInd{0%{transform:translateX(-100%)}100%{transform:translateX(270%)}}
+@media(min-width:1024px){.rs-pg{bottom:16px}}

@@ -106,14 +106,22 @@
       <div class="rs-note">ဗီဒီယိုကို အသံအလိုက် အမြန်/အနှေး ညှိထုတ်မှာမို့ အရှည်က အသံအရှည်အတိုင်း ဖြစ်ပါမယ်။ Render ပြီးတဲ့အထိ ဒီစာမျက်နှာကို ဖွင့်ထားပါ။</div>
       <h4 class="rs-h4">Output</h4><div id="rsOut"><div class="rs-note">Render ပြီးရင် ရလဒ်ဗီဒီယို ဒီမှာ ပေါ်မယ်။</div></div></section>
   </div>
-  <div class="rs-bar"><i id="rsBar"></i></div>
+  <div class="rs-pg" id="rsPg" hidden><div class="rs-pgh"><b id="rsPgL">Progress</b><span id="rsPgN">0%</span></div><div class="rs-bar"><i id="rsBar"></i></div><small id="rsPgD"></small></div>
   <div id="rsLog" class="rs-log">ဗီဒီယိုထဲကလို အဆင့်တစ်ခုချင်း ဝင်လုပ်ပါ။ Setting တွေက Media→SRT / SRT ဘာသာပြန် / စာသား→အသံ tab တွေနဲ့ ချိတ်ထားပါတယ်။</div>`;
 
   const log = m => { const b = $('#rsLog'); b.textContent += '\n' + m; b.scrollTop = b.scrollHeight; };
-  const bar = p => { $('#rsBar').style.width = Math.round(p * 100) + '%'; };
+  // One progress card for every long job: label + bar + number (+ detail such as "3 / 12"). No label = keep the current one.
+  const setTxt = (id, t) => { const n = $(id); if (n.textContent !== t) n.textContent = t; };
+  const bar = p => { const v = Math.round(clamp(+p || 0, 0, 1) * 100), pg = $('#rsPg'); pg.hidden = false; pg.classList.remove('busy', 'err'); $('#rsBar').style.width = v + '%'; setTxt('#rsPgN', v + '%'); };
+  const prog = (label, p, detail) => { // p = 0..1, or null when the length of the job is unknown (moving bar + "…")
+    const pg = $('#rsPg'); pg.hidden = false; if (label != null) setTxt('#rsPgL', label); setTxt('#rsPgD', detail || '');
+    if (p == null) { pg.classList.remove('err'); pg.classList.add('busy'); $('#rsBar').style.width = ''; setTxt('#rsPgN', '…'); } else bar(p);
+  };
+  const idle = () => { $('#rsPg').hidden = true; };
+  const failBar = () => { const pg = $('#rsPg'); if (pg.hidden) return; pg.classList.remove('busy'); pg.classList.add('err'); setTxt('#rsPgD', 'မအောင်မြင်ပါ — အောက်က log ကို ကြည့်ပါ'); };
   const run = (id, fn) => $(id).addEventListener('click', async e => {
     const b = e.currentTarget; b.disabled = true;
-    try { await fn(); } catch (err) { log('✗ ' + ((err && err.message) || err)); } finally { b.disabled = false; }
+    try { await fn(); } catch (err) { log('✗ ' + ((err && err.message) || err)); failBar(); } finally { b.disabled = false; }
   });
   const click = (node, fn) => { node.addEventListener('click', fn); node.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); fn(e); } }); };
 
@@ -347,11 +355,13 @@
     Object.assign(ST, { file: f, subs: [], mixed: null, plan: [], cues: [], done: {}, hid: null }); renderSegs();
     if (ST.url) URL.revokeObjectURL(ST.url); ST.url = URL.createObjectURL(f);
     const iv = $('#rsInV'); iv.src = ST.url; iv.hidden = false; pv.src = ST.url; pv.load();
+    prog('Step 1 · ဗီဒီယို ဖတ်နေသည်', null, f.name);
     const v = document.createElement('video'); v.preload = 'metadata'; v.src = ST.url;
+    v.onerror = () => { prog('Step 1 · ဗီဒီယို ဖတ်မရပါ', 0); failBar(); log('✗ ဗီဒီယို ဖတ်မရပါ — ဖိုင်ပုံစံ မမှန်နိုင်ပါ'); };
     v.onloadedmetadata = () => {
       Object.assign(ST, { dur: v.duration || 0, w: v.videoWidth, h: v.videoHeight });
       $('#rsChips').innerHTML = [fmtT(ST.dur), `${ST.w}×${ST.h}`, (f.size / 1048576).toFixed(1) + ' MB', 'Audio'].map(x => `<span>${x}</span>`).join('');
-      mark(1); drawPrev();
+      mark(1); drawPrev(); prog('Step 1 · ဗီဒီယို ✓', 1, fmtT(ST.dur) + ' · ' + (f.size / 1048576).toFixed(1) + ' MB');
     };
   });
 
@@ -362,9 +372,9 @@
     transcribeAborted = false;
     const num = (inp, d, min) => Math.max(parseInt(inp && inp.value, 10) || d, min);
     const maxRetries = num(transcribeMaxRetriesInput, 2, 1), timeoutSec = num(transcribeTimeoutSecInput, 120, 10), chunkSec = num(transcribeChunkSizeInput, 60, 15), workers = num(transcribeWorkerCountInput, 3, 1);
-    log('Audio decode လုပ်နေသည်...');
+    log('Audio decode လုပ်နေသည်...'); prog('Step 2 · Audio decode', null, 'ဗီဒီယိုထဲက အသံကို ဖတ်နေသည် (' + (ST.file.size / 1048576).toFixed(0) + ' MB)');
     const buf = await decodeMediaToAudioBuffer(ST.file, m => log(m)); ST.dur = buf.duration;
-    log('စာထုတ်နေသည်...');
+    log('စာထုတ်နေသည်...'); prog('Step 2 · စာထုတ်နေသည်', 0, 'chunk များ စတင်နေသည်');
     const n = cueVal(); cueEl.value = String(n); cuePaint(); safeLsSet(CUE_KEY, String(n));
     const dur = [Math.min(20, Math.round((2.5 + n * 0.15) * 10) / 10), Math.min(24, Math.round((4 + n * 0.16) * 10) / 10)]; // same values as the old 14/24/36/50 presets, interpolated for any number
     const keep = { cjk: { ...PHRASE_OPTS.cjk }, latin: { ...PHRASE_OPTS.latin } }, keepFn = window.applyCueMaxChars;
@@ -372,12 +382,13 @@
       Object.assign(PHRASE_OPTS.cjk, { maxChars: n, minChars: Math.min(6, Math.floor(n / 3)), maxDurSec: dur[0] });
       Object.assign(PHRASE_OPTS.latin, { maxChars: n * 3, minChars: Math.min(24, n), maxDurSec: dur[1] });
     };
-    let res;
+    let res; const keepTP = window.updateTranscribeChunkProgress; // script.js reports finished chunks here -> mirror them on the card
+    window.updateTranscribeChunkProgress = (d, t) => { if (keepTP) keepTP(d, t); prog('Step 2 · စာထုတ်နေသည်', t ? d / t : 0, d + ' / ' + t + ' အပိုင်း'); };
     try { res = await transcribeMediaWithWorkers(buf, chunkSec, workers, transcribeLangSelect.value, maxRetries, timeoutSec, m => log(m), true); }
-    finally { window.applyCueMaxChars = keepFn; Object.assign(PHRASE_OPTS.cjk, keep.cjk); Object.assign(PHRASE_OPTS.latin, keep.latin); }
+    finally { window.updateTranscribeChunkProgress = keepTP; window.applyCueMaxChars = keepFn; Object.assign(PHRASE_OPTS.cjk, keep.cjk); Object.assign(PHRASE_OPTS.latin, keep.latin); }
     ST.subs = res.srt ? parseSrt(res.srt) : []; if (!ST.subs.length) throw new Error('စာ မထွက်ပါ');
     const used = Object.entries(res.providerCounts || {}).map(([p, c]) => p.toUpperCase() + ':' + c).join(' ');
-    renderSegs(); mark(2); log('✓ Segments ' + ST.subs.length + ' ခု' + (used ? ' · ' + used : ''));
+    renderSegs(); mark(2); prog('Step 2 · Transcribe ✓', 1, ST.subs.length + ' segments'); log('✓ Segments ' + ST.subs.length + ' ခု' + (used ? ' · ' + used : ''));
   });
 
   // ---- 3 Translate: the SRT Translator tab's own engine + prompt + settings ----
@@ -386,10 +397,19 @@
     if (!getKeys().length) return log('⚠ Gemini key မရှိပါ — အပေါ်က API KEYS မှာ ထည့်ပါ');
     translationAborted = false;
     const g = (inp, d, min) => Math.max(parseInt(inp.value, 10) || d, min), lang = targetLangSelect.value, to = g(timeoutSecInput, 60, 5);
-    log('ဘာသာပြန်နေသည်... (' + lang + ') — SRT ဘာသာပြန် tab ရဲ့ prompt အတိုင်း');
-    ST.subs = await translateSrtWithWorkers(ST.subs, g(chunkSizeInput, 30, 1), lang, g(workerCountInput, 3, 1), g(maxRetriesInput, 3, 1), to);
-    if (!translationAborted && isProofreadEnabled()) { log('Proofread လုပ်နေသည်...'); await proofreadTranslatedSubs(ST.subs, lang, to); }
-    renderSegs(); mark(3); log('✓ ဘာသာပြန်ပြီး — စာကို ပြင်လို့ရပါတယ်');
+    log('ဘာသာပြန်နေသည်... (' + lang + ') — SRT ဘာသာပြန် tab ရဲ့ prompt အတိုင်း'); prog('Step 3 · ဘာသာပြန်နေသည်', 0, 'စတင်နေသည်');
+    const keepTr = window.updateTransProgress; let obs = null; // script.js reports finished chunks here -> mirror them on the card
+    window.updateTransProgress = (d, t) => { if (keepTr) keepTr(d, t); prog('Step 3 · ဘာသာပြန်နေသည်', t ? d / t : 0, d + ' / ' + t + ' အပိုင်း'); };
+    try {
+      ST.subs = await translateSrtWithWorkers(ST.subs, g(chunkSizeInput, 30, 1), lang, g(workerCountInput, 3, 1), g(maxRetriesInput, 3, 1), to);
+      if (!translationAborted && isProofreadEnabled()) {
+        log('Proofread လုပ်နေသည်...'); prog('Step 3 · Proofread', null, 'စစ်နေသည်');
+        obs = new MutationObserver(() => { const m = [...transLogBox.textContent.matchAll(/Proofread (\d+)\/(\d+)/g)].pop(); if (m) prog('Step 3 · Proofread', +m[1] / +m[2], m[1] + ' / ' + m[2] + ' အပိုင်း'); });
+        obs.observe(transLogBox, { childList: true, subtree: true, characterData: true });
+        await proofreadTranslatedSubs(ST.subs, lang, to);
+      }
+    } finally { window.updateTransProgress = keepTr; if (obs) obs.disconnect(); }
+    renderSegs(); mark(3); prog('Step 3 · ဘာသာပြန် ✓', 1, ST.subs.length + ' segments'); log('✓ ဘာသာပြန်ပြီး — စာကို ပြင်လို့ရပါတယ်');
   });
 
   // ---- 3b Manual: copy the prompt, translate anywhere else, paste the JSON back ----
@@ -464,7 +484,8 @@
   // each voice has Download / (Play sample + Delete once downloaded), a Speed slider, Close / Select.
   const spEl = document.getElementById('speedSlider');
   const NARA_IDS = ['shoon', 'thazin', 'ko-banyar', 'htet-myat'], NT = () => window.NaraTTS;
-  const naraSel = $('#rsNara'), setNaraSt = (m, p) => { $('#rsNaraSt').textContent = m || ''; if (typeof p === 'number') bar(p / 100); };
+  const naraSel = $('#rsNara'), setNaraSt = (m, p) => { $('#rsNaraSt').textContent = m || ''; if (typeof p === 'number') prog('Nara voice ဒေါင်းနေသည်', p / 100, m); },
+    setNaraBusy = (m, p) => { setNaraSt(m, p); if (typeof p !== 'number') prog('Nara voice', null, m); }; // waiting steps with no percentage
   const spTxt = () => (+spEl.value || 1).toFixed(1) + 'x';
   let naraOn = NARA_IDS.includes(safeLsGet('neoyangon_recap_nara'));
   let naraPick = NARA_IDS.includes(safeLsGet('neoyangon_recap_nara_pick')) ? safeLsGet('neoyangon_recap_nara_pick') : (naraOn ? safeLsGet('neoyangon_recap_nara') : '');
@@ -510,13 +531,13 @@
   function nvProgress(id, m, p) {
     dlState[id] = p; nvMsg(m); const row = sq('.nv-row[data-v="' + id + '"]'); if (!row) return;
     const a = row.querySelector('.nv-pct'), b = row.querySelector('.nv-pb span'); if (a) a.textContent = p + '%'; if (b) b.style.width = p + '%';
-    bar(p / 100);
+    prog('Nara voice ဒေါင်းနေသည်', p / 100, m);
   }
   async function nvDownload(id) {
     if (nvBusy || dlState[id] !== undefined) return; dlState[id] = 0; nvRender();
     try { await NT().download(id, (m, p) => nvProgress(id, m, p)); nvMsg('✓ ' + NT().nameOf(id) + ' ဒေါင်းပြီး — Play နဲ့ နမူနာ နားထောင်နိုင်ပါပြီ'); log('✓ Nara ' + NT().nameOf(id) + ' ဒေါင်းပြီး'); }
     catch (e) { nvMsg('✗ ' + e.message); log('✗ ' + e.message); }
-    finally { delete dlState[id]; bar(0); nvRender(); paintNara(); }
+    finally { delete dlState[id]; idle(); nvRender(); paintNara(); }
   }
   function nvStop() { if (nvPlay) { try { nvPlay.src.stop(); } catch (e) { /* already stopped */ } try { nvPlay.ctx.close(); } catch (e) { /* closed */ } nvPlay = null; } }
   async function nvPreview(id) {
@@ -547,7 +568,7 @@
   $$('#nvSeg span').forEach(x => click(x, () => { naraOn = x.dataset.m === 'nara'; applyNara(); if (naraOn && !naraPick) openSheet(); }));
   $('#nvCard').addEventListener('click', openSheet);
   spEl.addEventListener('input', () => { if (!sheet.hidden) { sq('#nvSp').value = spEl.value; sq('#nvSpV').textContent = spTxt(); } paintNara(); });
-  run('#rsNaraEng', async () => { setNaraSt('Engine စစ်နေသည်...'); const s = await NT().checkEngine(setNaraSt); setNaraSt('✓ Engine အဆင်ပြေ (' + s + ')'); log('✓ Nara engine OK · ' + s); });
+  run('#rsNaraEng', async () => { setNaraBusy('Engine စစ်နေသည်...'); const s = await NT().checkEngine(setNaraBusy); setNaraSt('✓ Engine အဆင်ပြေ (' + s + ')'); prog('Nara engine ✓', 1, s); log('✓ Nara engine OK · ' + s); });
   $('#rsStop').addEventListener('click', () => { ttsAborted = true; log('ရပ်နေသည်...'); });
   new MutationObserver(() => { const dis = $('#rsVo').disabled; $('#rsStop').hidden = !dis; $('#rsGen').hidden = !dis; $('#rsVo').hidden = dis; }).observe($('#rsVo'), { attributes: true, attributeFilter: ['disabled'] });
   applyNara();
@@ -645,13 +666,14 @@
           const i16 = new Int16Array(pcmBuffer, 0, pcmBuffer.byteLength >> 1), f = new Float32Array(i16.length);
           for (let k = 0; k < i16.length; k++) f[k] = i16[k] / 32768; clips[i] = natural ? prepClip(f, sampleRate) : { f, sr: sampleRate };
         } catch (e) { log(`အပိုင်း ${i + 1} အသံ မထွက်: ${e.message}`); }
-        done++; bar(done / groups.length * 0.8);
+        done++; prog('Step 4 · အသံထုတ်နေသည်', done / groups.length, done + ' / ' + groups.length + ' အပိုင်း');
         genSet('Generating', done, groups.length, done < groups.length ? 'Speaking line ' + (done + 1) + (nara ? ' · ကျန်ခန့် ' + Math.max(1, Math.round((Date.now() - tNara) / done * (groups.length - done) / 60000)) + ' မိနစ်' : '') : 'Mixing...');
         if (nara && (done === 1 || done % 5 === 0) && done < groups.length) { const left = (Date.now() - tNara) / done * (groups.length - done) / 60000; log('Nara: ' + done + '/' + groups.length + ' · ကျန်ခန့် ' + (left < 1 ? '<1' : Math.round(left)) + ' မိနစ်'); }
       }
     }
     genSet('Preparing', 0, groups.length, nara ? 'Nara voice ပြင်ဆင်နေသည်...' : '');
-    if (nara) { await NaraTTS.prepare(nara, setNaraSt); setNaraSt(await naraStatus()); tNara = Date.now(); }
+    if (nara) { await NaraTTS.prepare(nara, setNaraBusy); setNaraSt(await naraStatus()); tNara = Date.now(); }
+    prog('Step 4 · အသံထုတ်နေသည်', 0, '0 / ' + groups.length + ' အပိုင်း');
     genSet('Generating', 0, groups.length, 'Speaking line 1');
     log('အသံထုတ်နေသည်... (' + (nara ? 'Nara · ' + $('#rsNara').selectedOptions[0].text : voiceSelect.selectedOptions[0].text) + ') · ' + groups.length + ' အပိုင်း' + (natural ? ' (ဆက်ဖတ်)' : ''));
     await Promise.all(Array.from({ length: Math.min(nara ? 1 : TTS_WORKERS, groups.length) }, worker));
@@ -678,7 +700,7 @@
       lo.connect(hi); hi.connect(cp); cp.connect(mk); mk.connect(oc.destination); tail = lo;
     }
     place.forEach(({ c, start }) => { const b = oc.createBuffer(1, c.f.length, c.sr); b.copyToChannel(c.f, 0); const s = oc.createBufferSource(); s.buffer = b; s.playbackRate.value = rate; s.connect(tail); s.start(start); });
-    ST.mixed = await oc.startRendering(); bar(1);
+    prog('Step 4 · အသံ ပေါင်းစပ်နေသည်', null, 'ခဏစောင့်ပါ'); ST.mixed = await oc.startRendering(); prog('Step 4 · Voice Over ✓', 1, Math.round(cursor) + ' စက္ကန့်');
     const ch = ST.mixed.getChannelData(0), out = new Int16Array(ch.length);
     for (let k = 0; k < ch.length; k++) { const v = clamp(ch[k], -1, 1); out[k] = v < 0 ? v * 32768 : v * 32767; }
     const wav = createWavBlob(out.buffer, SR), srtBlob = new Blob([rebuildSrt(subs, { preserveIndex: true })], { type: 'text/plain;charset=utf-8'});
@@ -884,7 +906,7 @@
   run('#rsRender', async () => {
     if (!ST.file) return log('⚠ ဗီဒီယို မရှိပါ (Step 1)'); if (!ST.mixed) return log('⚠ Voice Over အရင်လုပ်ပါ (Step 4)');
     if (typeof MediaRecorder === 'undefined') throw new Error('ဒီ browser မှာ MediaRecorder မရှိပါ (Chrome သုံးပါ)');
-    pv.pause(); await loadFont(S.subFont); for (const id of new Set(S.items.filter(x => x.type === 'text').map(x => x.font || 'def'))) await loadFont(id); await document.fonts.ready; const L = { 480: 854, 720: 1280, 1080: 1920 }[S.size], [W, H] = dims(L), BR = vBits(W, H), AB = qOf().ab;
+    prog('Step 5 · ပြင်ဆင်နေသည်', null, 'ဖောင့် / ဗီဒီယို load လုပ်နေသည်'); pv.pause(); await loadFont(S.subFont); for (const id of new Set(S.items.filter(x => x.type === 'text').map(x => x.font || 'def'))) await loadFont(id); await document.fonts.ready; const L = { 480: 854, 720: 1280, 1080: 1920 }[S.size], [W, H] = dims(L), BR = vBits(W, H), AB = qOf().ab;
     const cv = document.createElement('canvas'); cv.width = W; cv.height = H; const g = cv.getContext('2d');
     const v = document.createElement('video'); v.playsInline = true; v.preload = 'auto'; v.src = ST.url;
     await new Promise((ok, no) => { v.onloadeddata = ok; v.onerror = () => no(new Error('ဗီဒီယို ဖွင့်မရပါ')); });
@@ -908,11 +930,11 @@
       while (pi + 1 < plan.length && ot >= plan[pi + 1].o) { const p = plan[++pi]; v.playbackRate = clamp((p.vb - p.va) / p.len, 0.5, 3); if (Math.abs(v.currentTime - p.va) > 0.6) v.currentTime = p.va; }
       if (ot > total + 0.3) return finish();
       const cu = S.sub === '1' ? cues.find(x => ot >= x.a && ot < x.b) : null;
-      paint(g, W, H, v, { mirror: mirrorAt(Math.max(pi, 0)), text: cu ? cu.text : '', sel: false }); bar(clamp(ot / total, 0, 1)); requestAnimationFrame(frame);
+      paint(g, W, H, v, { mirror: mirrorAt(Math.max(pi, 0)), text: cu ? cu.text : '', sel: false }); prog('Step 5 · Render', clamp(ot / total, 0, 1), fmtT(Math.max(ot, 0)) + ' / ' + fmtT(total) + ' · ကျန် ' + fmtT(Math.max(total - ot, 0))); requestAnimationFrame(frame);
     }
     log('Render စတင်ပြီ — စာမျက်နှာကို မပိတ်ပါနဲ့'); rec.start(1000);
     t0 = ac.currentTime + 0.15; vs.start(t0); ms && ms.start(t0); await v.play(); frame();
-    await done; if (wake) wake.release(); ac.close(); btn.hidden = true;
+    await done; if (wake) wake.release(); ac.close(); btn.hidden = true; prog('Step 5 · ဖိုင် ပြင်ဆင်နေသည်', null, 'ဗီဒီယိုကို ပေါင်းစည်းနေသည်');
     const type = rec.mimeType || mime || 'video/webm', ext = type.includes('mp4') ? 'mp4' : 'webm'; let vblob = new Blob(parts, { type: type.split(';')[0] });
     if (!vblob.size) throw new Error('Render ထွက်လာတဲ့ဖိုင် ဗလာဖြစ်နေသည် — ပြန်ကြိုးစားပါ');
     if (ext === 'mp4') { // Chrome's recorder writes a fragmented MP4 -> VN / CapCut read a wrong (very short) duration; rewrite it as a normal MP4
@@ -924,7 +946,7 @@
     const lk = document.createElement('div'); lk.className = 'rs-links'; out.appendChild(lk);
     dlBtn(lk, 'ဗီဒီယို ဒေါင်းလုဒ် (.' + ext + ')', () => vblob, 'recap.' + ext);
     dlBtn(lk, 'SRT ဒေါင်းလုဒ်', () => new Blob([rebuildSrt(ST.subs, { preserveIndex: true })], { type: 'text/plain;charset=utf-8' }), 'translated.srt');
-    mark(5); log('✓ Render ပြီး');
+    mark(5); prog('Step 5 · Render ✓', 1, (vblob.size / 1048576).toFixed(1) + ' MB'); log('✓ Render ပြီး');
   });
 
   // ---- History hooks: save / reopen a project (used by history.js) ----
